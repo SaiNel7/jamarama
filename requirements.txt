@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+sounddevice
+numpy
+# magenta-rt (MLX build) must already be installed — it lives in cloud/.venv,
+# which is the venv to run the server from. See README.

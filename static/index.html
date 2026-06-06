@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>jamarama controller</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #111;
+    color: #eee;
+    max-width: 480px;
+    margin-inline: auto;
+  }
+  h1 { font-size: 1.2rem; margin: 0 0 12px; }
+  #status {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 0.85rem;
+    margin-bottom: 16px;
+  }
+  #status.connected    { background: #143d14; color: #7ee87e; }
+  #status.disconnected { background: #3d1414; color: #e87e7e; }
+  .control { margin-bottom: 20px; }
+  label { display: block; font-size: 0.8rem; color: #999; margin-bottom: 6px; }
+  button {
+    font-size: 1rem;
+    padding: 14px 18px;
+    border: none;
+    border-radius: 10px;
+    background: #2b6cb0;
+    color: #fff;
+    width: 100%;
+  }
+  button:active { background: #1f4f82; }
+  .row { display: flex; gap: 8px; }
+  .chords { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .chords button.active { background: #38a169; }
+  input[type="text"] {
+    flex: 1;
+    font-size: 1rem;
+    padding: 12px;
+    border-radius: 10px;
+    border: 1px solid #444;
+    background: #1c1c1c;
+    color: #eee;
+  }
+  .row button { width: auto; }
+  input[type="range"] { width: 100%; }
+  #chaosVal { color: #ccc; font-variant-numeric: tabular-nums; }
+  #log {
+    background: #1a1a1a;
+    border: 1px solid #333;
+    border-radius: 10px;
+    padding: 10px;
+    height: 220px;
+    overflow-y: auto;
+    font-family: ui-monospace, monospace;
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+</style>
+</head>
+<body>
+  <h1>jamarama controller</h1>
+  <span id="status" class="disconnected">disconnected</span>
+
+  <div class="control">
+    <label>Chord</label>
+    <div class="chords" id="chords">
+      <button data-chord="Am" class="active">Am</button>
+      <button data-chord="Dm">Dm</button>
+      <button data-chord="C">C</button>
+      <button data-chord="G">G</button>
+    </div>
+  </div>
+
+  <div class="control">
+    <label for="tasteInput">Taste</label>
+    <div class="row">
+      <input type="text" id="tasteInput" placeholder="describe a vibe…" autocomplete="off">
+      <button id="tasteBtn">Send</button>
+    </div>
+  </div>
+
+  <div class="control">
+    <label for="chaosSlider">Chaos: <span id="chaosVal">50</span></label>
+    <input type="range" id="chaosSlider" min="0" max="100" value="50">
+  </div>
+
+  <label>Ack log</label>
+  <div id="log"></div>
+
+<script>
+(function () {
+  // Host is taken from wherever this page was served, so opening
+  // http://<LAN-IP>:8000 on the phone "just works".
+  const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
+  const RECONNECT_MS = 1500;
+
+  const statusEl = document.getElementById("status");
+  const logEl = document.getElementById("log");
+  let ws = null;
+
+  function logLine(text) {
+    const time = new Date().toLocaleTimeString();
+    logEl.textContent = `[${time}] ${text}\n` + logEl.textContent;
+  }
+
+  function setStatus(connected) {
+    statusEl.textContent = connected ? "connected" : "disconnected";
+    statusEl.className = connected ? "connected" : "disconnected";
+  }
+
+  function connect() {
+    ws = new WebSocket(WS_URL);
+    ws.onopen = () => { setStatus(true); logLine("socket open → " + WS_URL); };
+    ws.onmessage = (e) => logLine("ack: " + e.data);
+    ws.onclose = () => {
+      setStatus(false);
+      logLine(`socket closed, retrying in ${RECONNECT_MS}ms…`);
+      setTimeout(connect, RECONNECT_MS);
+    };
+    ws.onerror = () => ws.close();
+  }
+
+  function send(msg) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(msg));
+      logLine("sent: " + JSON.stringify(msg));
+    } else {
+      logLine("NOT CONNECTED, dropped: " + JSON.stringify(msg));
+    }
+  }
+
+  document.querySelectorAll("#chords button").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      send({ type: "harmony", chord: btn.dataset.chord });
+      document.querySelectorAll("#chords button").forEach((b) =>
+        b.classList.toggle("active", b === btn));
+    }));
+
+  document.getElementById("tasteBtn").addEventListener("click", () => {
+    const input = document.getElementById("tasteInput");
+    if (!input.value.trim()) return;
+    send({ type: "taste", value: input.value.trim() });
+    input.value = "";
+  });
+
+  const slider = document.getElementById("chaosSlider");
+  const chaosVal = document.getElementById("chaosVal");
+  slider.addEventListener("input", () => { chaosVal.textContent = slider.value; });
+  slider.addEventListener("change", () =>
+    send({ type: "chaos", value: Number(slider.value) }));
+
+  connect();
+})();
+</script>
+</body>
+</html>
