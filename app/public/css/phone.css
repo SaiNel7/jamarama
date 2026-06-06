@@ -4,18 +4,30 @@ html, body { height: 100%; overflow: hidden; overscroll-behavior: none; position
 .grow { flex: 1; min-height: 0; }
 .spacer { flex: 1; min-height: 0; }
 
+/* ---------- slim phone header (status bar + player squares removed) ---------- */
+.ph-top { display: flex; align-items: center; gap: 10px; padding: 14px 18px 4px; }
+.ph-top .chip { width: 22px; height: 22px; border-radius: 6px; background: var(--role); border: 2px solid var(--ink); }
+.ph-top .role { font-size: 20px; font-weight: 900; }
+.ph-top .live { margin-left: auto; }
+.ph-top .live .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--role); display: inline-block; transition: transform .08s ease; }
+.ph-top .live .dot.pulse { transform: scale(1.7); }
+
 /* ---------- HARMONY ---------- */
-.h-keyline { display:flex; align-items:center; justify-content:flex-end; padding:0 18px; }
-.hwheel { position: relative; flex: 1; min-height: 0; margin: 4px 0; touch-action: none; }
+.h-key { padding: 10px 18px 0; }
+.h-key .mono { font-size: 14px; color: #5a564d; letter-spacing: 1px; }
+.hwheel { position: relative; flex: 1; min-height: 0; margin: 2px 0; touch-action: none; }
 .hnode { position: absolute; border: var(--thick); border-radius: 50%; box-shadow: var(--shadow-sm);
   background: var(--card); display: flex; flex-direction: column; align-items: center; justify-content: center;
-  transform: translate(-50%, -50%); transition: transform .08s ease, background .15s ease; touch-action: none; }
-.hnode .r { font-size: 22px; font-weight: 900; line-height: 1; }
-.hnode .n { font-family: "Space Mono", monospace; font-size: 13px; }
+  transform: translate(-50%, -50%); transition: transform .1s ease, background .15s ease; pointer-events: none; }
+.hnode .r { font-size: 18px; font-weight: 900; line-height: 1; }
+.hnode .n { font-family: "Space Mono", monospace; font-size: 11px; }
 .hnode.active { background: var(--harmony); color: #fff; }
 .hnode.center { border-width: 5px; }
 .hnode.cur { outline: 5px solid var(--brighter); outline-offset: 3px; }
-.hnode.pressed { transform: translate(-50%, -50%) scale(.92); }
+.hnode.hit { transform: translate(-50%, -50%) scale(1.14); background: var(--harmony-lt); }
+.haddnode { position: absolute; border: 4px dashed var(--ink); border-radius: 50%; background: var(--card);
+  display: flex; align-items: center; justify-content: center; transform: translate(-50%, -50%);
+  font-size: 34px; font-weight: 900; color: #5a564d; pointer-events: none; }
 .wlines { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
 
 /* 4-bar loop timeline — the clear "how long does each chord last" view + the swapper */
@@ -32,7 +44,7 @@ html, body { height: 100%; overflow: hidden; overscroll-behavior: none; position
 .htl-block .lab { font-size: 19px; font-weight: 900; line-height: 1; }
 .htl-block .dur { font-family: "Space Mono", monospace; font-size: 10px; opacity: .85; margin-top: 3px; }
 .htl-block.cur { background: var(--harmony-lt); color: #16120D; outline: 3px solid var(--brighter); outline-offset: -3px; z-index: 3; }
-.htl-ph { position: absolute; top: 0; bottom: 0; width: 3px; background: var(--brighter); z-index: 4; transition: left .12s linear; }
+.htl-ph { position: absolute; top: 0; bottom: 0; width: 3px; background: var(--brighter); z-index: 4; will-change: left; }
 .h-bottom { display: flex; align-items: center; gap: 10px; padding: 4px 18px 16px; }
 
 /* chord picker overlay */
@@ -49,6 +61,12 @@ html, body { height: 100%; overflow: hidden; overscroll-behavior: none; position
 .picker .qual { border: var(--border); border-radius: 999px; box-shadow: var(--shadow-sm); background: var(--card);
   padding: 9px 14px; font-weight: 900; font-size: 15px; }
 .picker .qual.sel { background: var(--harmony); color: #fff; }
+.picker .lenrow { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.picker .lenlbl { font-size: 12px; color: #5a564d; width: 56px; }
+.picker .lens { display: flex; gap: 8px; flex: 1; }
+.picker .len { flex: 1; border: var(--border); border-radius: 10px; box-shadow: var(--shadow-sm); background: var(--card);
+  padding: 10px 0; text-align: center; font-weight: 900; font-size: 13px; }
+.picker .len.sel { background: var(--groove); }
 .picker .row { display: flex; gap: 10px; margin-top: 14px; }
 .picker .row .btn { flex: 1; padding: 16px; text-align: center; font-size: 18px; }
 .picker .preview { background: var(--card); border: var(--border); border-radius: 12px; padding: 12px;

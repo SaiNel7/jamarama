@@ -110,6 +110,10 @@
 .lk.on { background:var(--lead); }
 .motif { height:70px; border:var(--border); border-radius:10px; background:var(--cream); position:relative; overflow:hidden; }
 .motif .mn { position:absolute; height:8px; border-radius:4px; background:var(--lead); border:1.5px solid var(--ink); }
+/* lead loop lane: recorded/generated notes as bars + a sweeping playhead */
+.leadloop { position:relative; height:84px; border:var(--thick); border-radius:12px; background:var(--cream); overflow:hidden; box-shadow:var(--shadow-sm); margin-bottom:8px; }
+.leadloop .lln { position:absolute; height:8px; border-radius:5px; background:var(--lead); border:1.5px solid var(--ink); transform:translateY(-50%); }
+.leadloop .llph { position:absolute; top:0; bottom:0; width:3px; background:var(--ink); left:0; opacity:.85; transition:left .05s linear; }
 .lbl { font-size:12px; color:#5a564d; }
 
 /* crowd mix faders */

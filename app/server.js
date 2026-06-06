@@ -8,7 +8,7 @@ import { networkInterfaces } from "os";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { spawn } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import QRCode from "qrcode";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -40,6 +40,7 @@ const state = {
   chord: "I",                       // current harmony degree (roman numeral)
   progression: ["I", "IV", "V", "vi"],
   progressionChords: [],            // [{label, notes:[midi]}] — voicing for swapped/non-diatonic chords
+  palette: [],                      // harmony wheel nodes [{roman, display}] — host mirrors the wheel
   schedule: [],                     // 16 beat-slots: chord on each beat of the fixed 4-bar loop
   taste: ["warm ambient pads", "cinematic texture"], // blended taste → MRT2 style embedding
   energy: 0.0,                      // crowd collective energy 0..1
@@ -101,6 +102,33 @@ app.get("/", (_req, res) => res.sendFile(join(__dirname, "public/host.html")));
 app.get("/join", (_req, res) => res.sendFile(join(__dirname, "public/join.html")));
 app.get("/info", async (_req, res) => {
   res.json({ ip: IP, port: PORT, joinUrl: JOIN_URL, qr: await QRCode.toDataURL(JOIN_URL, { margin: 1, width: 320 }) });
+});
+
+// Pre-bake the host's two voices (harmony + lead) from a taste prompt → Tone.Sampler one-shots
+// under public/voices/ (served statically). Offline MRT2 render (engine/prebake_voices.py),
+// ~7s; returns the manifest. The host loads /voices/manifest.json on start. (Prompt wiring TBD —
+// defaults stand in until taste→prompt is hooked up.)
+let prebaking = false;
+app.get("/prebake", (req, res) => {
+  if (prebaking) return res.status(409).json({ error: "prebake already running" });
+  const py = join(__dirname, "../.venv/bin/python");
+  const script = join(__dirname, "../engine/prebake_voices.py");
+  if (!existsSync(py) || !existsSync(script)) return res.status(500).json({ error: "prebake engine not found" });
+  const harmony = String(req.query.harmony || "warm analog synth pad, mellow").slice(0, 200);
+  const lead = String(req.query.lead || "bright expressive lead synth").slice(0, 200);
+  prebaking = true;
+  console.log(`  [prebake] harmony="${harmony}" lead="${lead}" …`);
+  const child = spawn(py, [script, "--harmony", harmony, "--lead", lead, "--out", join(__dirname, "public/voices")],
+    { cwd: join(__dirname, "../engine") });
+  let err = "";
+  child.stderr.on("data", (d) => { err += d.toString(); });
+  child.on("exit", (code) => {
+    prebaking = false;
+    if (code !== 0) { console.log(`  [prebake] failed (code ${code})`); return res.status(500).json({ error: "prebake failed", code, stderr: err.slice(-400) }); }
+    try { res.json(JSON.parse(readFileSync(join(__dirname, "public/voices/manifest.json"), "utf8"))); }
+    catch { res.status(500).json({ error: "manifest read failed" }); }
+    console.log("  [prebake] done");
+  });
 });
 
 const server = createServer(app);
@@ -176,6 +204,9 @@ function applyControl(msg, id) {
       // additive: 16-beat schedule (chord playing on each beat of the fixed 4-bar loop).
       // Host plays state.schedule[(bar*4+beat) % 16] each beat for sub-bar chord durations.
       if (payload.schedule) state.schedule = payload.schedule;
+      break;
+    case "palette":        // harmony wheel nodes [{roman, display}] → host mirrors the wheel
+      state.palette = payload.nodes;
       break;
     case "mood": {         // crowd: a mood tap
       if (state.mood[payload.mood] != null) state.mood[payload.mood]++;

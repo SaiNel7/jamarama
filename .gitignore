@@ -12,3 +12,13 @@ __pycache__/
 app/hosttest.mjs
 
 # NOTE: node_modules/ and external/ ARE committed (bundled for zero-install).
+# Exception: vexflow — the runtime loads only the vendored browser build under
+# app/public/vendor/vexflow (~560KB), so the full 32MB package is not committed.
+app/node_modules/vexflow/
+
+# pre-baked MRT2 voices (generated per taste)
+app/public/voices/
+
+# engine spike renders + logs (transient experiment output; scripts are committed)
+engine/spike_out/*.wav
+engine/*_log.txt

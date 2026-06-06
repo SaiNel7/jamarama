@@ -67,10 +67,15 @@
       <!-- CENTER -->
       <div class="col">
         <div class="sec grow">
-          <span class="pill groove">MUSIC READOUT</span><span class="seclbl mono">live notes</span>
+          <span class="pill groove">MUSIC READOUT</span><span class="seclbl mono">generated · harmony + lead</span>
+          <span class="readout-toggle">
+            <button id="view-midi" class="vbtn active" type="button">MIDI</button>
+            <button id="view-sheet" class="vbtn" type="button">SHEET</button>
+          </span>
           <span class="legend"><i class="sw" style="background:var(--harmony)"></i>HARMONY
             <i class="sw" style="background:var(--lead)"></i>LEAD</span>
           <div id="roll" class="roll"></div>
+          <div id="score" class="roll score" hidden></div>
         </div>
         <div class="sec">
           <span class="pill groove">GROOVE</span><span class="seclbl mono">your instrument · X/Y</span>
@@ -87,12 +92,16 @@
       <!-- RIGHT -->
       <div class="col">
         <div class="sec grow">
-          <span class="pill lead">LEAD</span><span class="seclbl mono">keyboard</span>
-          <div class="response"><span class="pill lead sm"><span class="dot"></span>RESPONSE</span>
-            <span class="seclbl mono">looping · play to change</span></div>
+          <span class="pill lead">LEAD</span><span class="seclbl mono">your input · <span id="leadloopstate">idle</span></span>
+          <div class="response" style="align-items:center;gap:10px">
+            <span class="pill lead sm"><span class="dot"></span>WILDNESS</span>
+            <input id="leadwild" type="range" min="0" max="100" value="30" style="flex:1;accent-color:var(--lead)">
+            <span class="mono" id="leadwildval" style="font-size:13px;min-width:34px;text-align:right">30%</span>
+          </div>
+          <div class="mono caps lbl" style="margin-top:8px">WHAT YOU PLAYED <span class="seclbl mono">raw input + playhead</span></div>
+          <div id="leadloop" class="leadloop"></div>
           <div id="leadkeys" class="leadkeys"></div>
-          <div class="mono caps lbl" style="margin-top:8px">CAPTURED MOTIF</div>
-          <div id="motif" class="motif"></div>
+          <div id="motif" class="motif" hidden></div>
         </div>
         <div class="sec">
           <span class="pill crowd">CROWD</span><span class="seclbl mono">→ the mix</span>
