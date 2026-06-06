@@ -39,6 +39,8 @@ const state = {
   bar: 0, beat: 0,
   chord: "I",                       // current harmony degree (roman numeral)
   progression: ["I", "IV", "V", "vi"],
+  progressionChords: [],            // [{label, notes:[midi]}] — voicing for swapped/non-diatonic chords
+  schedule: [],                     // 16 beat-slots: chord on each beat of the fixed 4-bar loop
   taste: ["warm ambient pads", "cinematic texture"], // blended taste → MRT2 style embedding
   energy: 0.0,                      // crowd collective energy 0..1
   mood: { brighter: 0, heavier: 0, dreamier: 0, darker: 0 },
@@ -65,6 +67,9 @@ function roster() {
 }
 function crowdCount() {
   return [...clients.values()].filter((c) => c.role === "crowd").length;
+}
+function hostCount() {
+  return [...clients.values()].filter((c) => c.role === "groove").length;
 }
 
 function send(ws, obj) {
@@ -118,6 +123,7 @@ wss.on("connection", (ws) => {
         send(ws, { type: "welcome", id, role, color, state, roster: roster(), crowdCount: crowdCount() });
         broadcast({ type: "roster", roster: roster(), crowdCount: crowdCount() }, id);
         console.log(`+ ${role} #${id} (${clients.size} connected)`);
+        if (role === "groove") onHostConnect();   // host tab opened → bring the texture engine up
         break;
       }
       // Host clock → fan out to phones so they pulse in time.
@@ -151,6 +157,7 @@ wss.on("connection", (ws) => {
       clients.delete(id);
       console.log(`- ${c?.role} #${id} (${clients.size} connected)`);
       broadcast({ type: "roster", roster: roster(), crowdCount: crowdCount() });
+      if (c?.role === "groove" && hostCount() === 0) onHostGone();  // last host tab closed → stop the engine
     }
   });
 });
@@ -163,6 +170,12 @@ function applyControl(msg, id) {
       break;
     case "progression":    // harmony: replace the drawn loop
       state.progression = payload.degrees;
+      // additive: per-step chord {label, notes:[midi]} so swapped/non-diatonic chords
+      // can be voiced from notes (host can read this when integrating arbitrary chords).
+      if (payload.chords) state.progressionChords = payload.chords;
+      // additive: 16-beat schedule (chord playing on each beat of the fixed 4-bar loop).
+      // Host plays state.schedule[(bar*4+beat) % 16] each beat for sub-bar chord durations.
+      if (payload.schedule) state.schedule = payload.schedule;
       break;
     case "mood": {         // crowd: a mood tap
       if (state.mood[payload.mood] != null) state.mood[payload.mood]++;
@@ -185,14 +198,30 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`\n  JAMARAMA host running`);
   console.log(`  Host screen : http://localhost:${PORT}`);
   console.log(`  Phones join : ${JOIN_URL}\n`);
-  startTexture();
+  // The texture engine is now started on demand when the host tab connects (onHostConnect)
+  // and stopped when the last host tab closes — so MRT2 never runs without a host present.
 });
 
 // --- spawn the MRT2 texture engine as a child so one command runs the whole stack ---
 // Disable with NO_TEXTURE=1 (e.g. UI-only testing). It connects back over WS for room
 // state and plays to the default audio device (OS-mixed with the browser's band).
-let texture = null;
+let texture = null;            // current MRT2 child process (null when not running)
+let textureGrace = null;       // pending shutdown timer (grace window for host reloads)
+
+// Host tab connected → start the engine; cancel any pending shutdown from a quick reload.
+function onHostConnect() {
+  if (textureGrace) { clearTimeout(textureGrace); textureGrace = null; }
+  startTexture();
+}
+// Last host tab closed → stop the engine, but wait out a grace window first so a page
+// reload (close immediately followed by reconnect) doesn't thrash a full model reload.
+function onHostGone() {
+  if (textureGrace) clearTimeout(textureGrace);
+  textureGrace = setTimeout(() => { textureGrace = null; stopTexture(); }, 6000);
+}
+
 function startTexture() {
+  if (texture) return;                                                      // already running (idempotent)
   if (process.env.NO_TEXTURE) { console.log("  [texture] disabled (NO_TEXTURE=1)\n"); return; }
   const py = join(__dirname, "../.venv/bin/python");
   const script = join(__dirname, "../engine/texture_engine.py");
@@ -200,15 +229,24 @@ function startTexture() {
     console.log("  [texture] engine not found (skipping) — run from repo root with .venv set up\n");
     return;
   }
-  console.log("  [texture] starting MRT2 engine (loads model, then streams)…\n");
-  texture = spawn(py, [script, `localhost:${PORT}`],
+  console.log("  [texture] host present — starting MRT2 engine (loads model, then streams)…\n");
+  const child = spawn(py, [script, `localhost:${PORT}`],
     { cwd: join(__dirname, "../engine"), env: { ...process.env, PYTHONUNBUFFERED: "1" } });
-  texture.stdout.on("data", (d) => process.stdout.write(d));               // engine already tags [texture]
-  texture.stderr.on("data", (d) => {                                        // filter ML/HF noise
+  texture = child;
+  child.stdout.on("data", (d) => process.stdout.write(d));                  // engine already tags [texture]
+  child.stderr.on("data", (d) => {                                          // filter ML/HF noise
     const s = d.toString();
     if (!/warning|hf_token|tflite|xnnpack|delegate|it\/s|^\s*\d+%/i.test(s)) process.stderr.write("[texture] " + s);
   });
-  texture.on("exit", (c) => console.log(`  [texture] engine exited (code ${c})`));
+  // Only clear `texture` if THIS child is still the current one (avoids a late exit from an
+  // old process wiping a freshly-spawned one).
+  child.on("exit", (c) => { if (texture === child) texture = null; console.log(`  [texture] engine exited (code ${c})`); });
+}
+// Stop the engine when no host is connected. The child's exit handler clears `texture`.
+function stopTexture() {
+  if (!texture) return;
+  console.log("  [texture] no host connected — stopping engine\n");
+  texture.kill("SIGTERM");
 }
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { texture?.kill("SIGTERM"); process.exit(0); });
 process.on("exit", () => texture?.kill("SIGTERM"));

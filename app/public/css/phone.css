@@ -1,0 +1,107 @@
+/* Phone controllers — fixed viewport, NO scrolling (scroll/swipe conflicts with play). */
+html, body { height: 100%; overflow: hidden; overscroll-behavior: none; position: fixed; width: 100%; }
+#screen { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; touch-action: none; }
+.grow { flex: 1; min-height: 0; }
+.spacer { flex: 1; min-height: 0; }
+
+/* ---------- HARMONY ---------- */
+.h-keyline { display:flex; align-items:center; justify-content:flex-end; padding:0 18px; }
+.hwheel { position: relative; flex: 1; min-height: 0; margin: 4px 0; touch-action: none; }
+.hnode { position: absolute; border: var(--thick); border-radius: 50%; box-shadow: var(--shadow-sm);
+  background: var(--card); display: flex; flex-direction: column; align-items: center; justify-content: center;
+  transform: translate(-50%, -50%); transition: transform .08s ease, background .15s ease; touch-action: none; }
+.hnode .r { font-size: 22px; font-weight: 900; line-height: 1; }
+.hnode .n { font-family: "Space Mono", monospace; font-size: 13px; }
+.hnode.active { background: var(--harmony); color: #fff; }
+.hnode.center { border-width: 5px; }
+.hnode.cur { outline: 5px solid var(--brighter); outline-offset: 3px; }
+.hnode.pressed { transform: translate(-50%, -50%) scale(.92); }
+.wlines { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+
+/* 4-bar loop timeline — the clear "how long does each chord last" view + the swapper */
+.htl { margin: 8px 18px 4px; }
+.htl-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+.htl-head .lbl { font-family: "Space Mono", monospace; font-size: 13px; color: #5a564d; text-transform: uppercase; }
+.htl-head .now { font-size: 24px; font-weight: 900; color: var(--harmony); }
+.htl-strip { position: relative; height: 88px; border: var(--thick); border-radius: 14px; background: var(--cream);
+  box-shadow: var(--shadow-sm); overflow: hidden; }
+.htl-grid { position: absolute; top: 0; bottom: 0; border-left: 2px dashed #cdbf9f; z-index: 1; }
+.htl-block { position: absolute; top: 6px; bottom: 6px; background: var(--harmony); border: 2px solid var(--ink);
+  border-radius: 8px; box-shadow: 2px 2px 0 var(--ink); display: flex; flex-direction: column; align-items: center;
+  justify-content: center; color: #fff; overflow: hidden; box-sizing: border-box; margin: 0 1px; z-index: 2; cursor: pointer; }
+.htl-block .lab { font-size: 19px; font-weight: 900; line-height: 1; }
+.htl-block .dur { font-family: "Space Mono", monospace; font-size: 10px; opacity: .85; margin-top: 3px; }
+.htl-block.cur { background: var(--harmony-lt); color: #16120D; outline: 3px solid var(--brighter); outline-offset: -3px; z-index: 3; }
+.htl-ph { position: absolute; top: 0; bottom: 0; width: 3px; background: var(--brighter); z-index: 4; transition: left .12s linear; }
+.h-bottom { display: flex; align-items: center; gap: 10px; padding: 4px 18px 16px; }
+
+/* chord picker overlay */
+.picker { position: fixed; inset: 0; background: rgba(22,18,13,.55); z-index: 50; display: flex;
+  align-items: flex-end; }
+.picker .sheet { background: var(--cream); border-top: var(--thick); border-radius: 24px 24px 0 0;
+  width: 100%; padding: 18px 18px 28px; box-shadow: 0 -6px 0 var(--ink); max-height: 86dvh; overflow: hidden; }
+.picker h3 { margin: 0 0 4px; font-size: 22px; font-weight: 900; }
+.picker .grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin: 10px 0; }
+.picker .chip { border: var(--border); border-radius: 12px; box-shadow: var(--shadow-sm); background: var(--card);
+  padding: 12px 0; text-align: center; font-weight: 900; font-size: 17px; }
+.picker .chip.sel { background: var(--harmony); color: #fff; }
+.picker .quals { display: flex; flex-wrap: wrap; gap: 8px; }
+.picker .qual { border: var(--border); border-radius: 999px; box-shadow: var(--shadow-sm); background: var(--card);
+  padding: 9px 14px; font-weight: 900; font-size: 15px; }
+.picker .qual.sel { background: var(--harmony); color: #fff; }
+.picker .row { display: flex; gap: 10px; margin-top: 14px; }
+.picker .row .btn { flex: 1; padding: 16px; text-align: center; font-size: 18px; }
+.picker .preview { background: var(--card); border: var(--border); border-radius: 12px; padding: 12px;
+  text-align: center; font-size: 26px; font-weight: 900; margin-top: 8px; }
+
+/* ---------- LEAD ---------- */
+.banner { margin: 12px 18px; background: var(--lead); color: #fff; border: var(--thick); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 18px; display: flex; align-items: center; gap: 12px; font-size: 21px; font-weight: 900; }
+.banner .dot { width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .08s ease; }
+.banner .dot.pulse { transform: scale(1.7); }
+.l-sub { display: flex; justify-content: space-between; align-items: baseline; padding: 0 18px; }
+.l-sub .a { font-family: "Space Mono", monospace; font-size: 13px; color: #5a564d; text-transform: uppercase; }
+.l-sub .b { font-family: "Space Mono", monospace; font-size: 13px; color: var(--lead); }
+.motif { margin: 8px 18px; height: 130px; border: var(--thick); border-radius: var(--radius); background: var(--cream);
+  box-shadow: var(--shadow-sm); position: relative; overflow: hidden; }
+.motif .ph-bar { position: absolute; top: 0; bottom: 0; border-left: 1px solid #cdbf9f; }
+.motif .mn { position: absolute; height: 18px; border-radius: 6px; background: var(--lead); border: 2px solid var(--ink);
+  box-shadow: 2px 2px 0 var(--ink); }
+
+.kb { position: relative; height: 230px; margin: 0 14px; touch-action: none; }
+.wk { position: absolute; bottom: 0; top: 0; border: var(--border); border-radius: 0 0 9px 9px; background: var(--card);
+  display: flex; align-items: flex-end; justify-content: center; padding-bottom: 12px; box-shadow: var(--shadow-sm); }
+.wk .d { width: 11px; height: 11px; border-radius: 50%; background: var(--gray); }
+.bk { position: absolute; top: 0; height: 62%; background: #16120D; border: 2px solid var(--ink); border-radius: 0 0 7px 7px; z-index: 3; }
+.wk.on { background: var(--lead); } .bk.on { background: var(--lead); }
+.octave { display: flex; align-items: center; gap: 0; border: var(--thick); border-radius: 14px; overflow: hidden;
+  box-shadow: var(--shadow-sm); }
+.octave button { border: none; background: var(--card); font-size: 26px; font-weight: 900; padding: 10px 22px; }
+.octave .val { background: var(--lead); color: #fff; text-align: center; padding: 6px 20px; line-height: 1; }
+.octave .val .k { font-family: "Space Mono", monospace; font-size: 11px; }
+.octave .val .v { font-size: 26px; font-weight: 900; }
+.l-foot { display: flex; align-items: center; gap: 14px; padding: 10px 18px 18px; }
+
+/* ---------- CROWD ---------- */
+.moodgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 18px 0; }
+.mood { border: var(--thick); border-radius: var(--radius); box-shadow: var(--shadow); aspect-ratio: 1.45;
+  display: flex; flex-direction: column; justify-content: space-between; align-items: flex-start;
+  padding: 16px; font-size: 27px; font-weight: 900; }
+.mood .ic { font-size: 26px; }
+.mood:active { transform: translate(6px,6px); box-shadow: 0 0 0 var(--ink); }
+.energybtn { position: relative; overflow: hidden; margin: 14px 18px 0; background: var(--crowd); color: #fff;
+  border: var(--thick); border-radius: var(--radius); box-shadow: var(--shadow); padding: 24px; text-align: center;
+  font-size: 26px; font-weight: 900; }
+.energybtn .fill { position: absolute; inset: 0; width: 0; background: var(--crowd-dk); }
+.energybtn .t { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; gap: 10px; }
+.energybtn.held { transform: translate(6px,6px); box-shadow: 0 0 0 var(--ink); }
+.c-bottom { padding: 0 18px 18px; }
+.roomenergy .lbl { font-family: "Space Mono", monospace; font-size: 13px; color: #5a564d; text-transform: uppercase;
+  display: flex; justify-content: space-between; align-items: flex-end; }
+.roomenergy .lbl .ct { color: var(--crowd); font-weight: 900; }
+.ebar { height: 44px; border: var(--thick); border-radius: 12px; background: var(--card); overflow: hidden; margin-top: 8px; display: flex; }
+.ebar > div { height: 100%; background: var(--crowd); display: flex; align-items: center; justify-content: flex-end;
+  color: #fff; padding-right: 14px; font-weight: 900; }
+.justnow .lbl { font-family: "Space Mono", monospace; font-size: 13px; color: #5a564d; text-transform: uppercase; margin-top: 18px; }
+.pills { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+.pill-m { border: var(--border); border-radius: 999px; box-shadow: var(--shadow-sm); padding: 8px 16px; font-size: 14px; font-weight: 900; }

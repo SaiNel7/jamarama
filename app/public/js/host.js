@@ -39,22 +39,55 @@ function initSynths() {
   }).connect(verb);
 }
 
+let started = false;
 async function startAudio() {
+  if (started) return;            // ignore double-taps (would double-schedule the clock)
+  started = true;
+  // Show the console FIRST — audio init must never hold the screen hostage. A contended
+  // output device (e.g. the MRT2 texture engine holding the default sink) can make
+  // Tone.start()'s AudioContext.resume() hang forever; we don't want a frozen lobby.
+  showConsole();
   try {
-    await Tone.start();
+    await withTimeout(Tone.start(), 4000);   // resume the AudioContext (bounded)
     initSynths();
-    Tone.getTransport().bpm.value = st?.tempo || 124;
-    Tone.getTransport().scheduleRepeat(onSixteenth, "16n");
-    Tone.getTransport().start();
-    document.getElementById("lobby").hidden = true;
-    document.getElementById("console").hidden = false;
-    buildConsole();
-    paintAll();
+    const t = Tone.getTransport();
+    t.bpm.value = st?.tempo || 124;
+    t.scheduleRepeat(onSixteenth, "16n");
+    t.start();
   } catch (e) {
-    const tag = document.querySelector("#lobby .lobby-tag");
-    if (tag) { tag.textContent = "START ERROR: " + (e?.message || e); tag.style.color = "#F4533A"; }
-    console.error("startAudio failed:", e);
+    console.error("audio start failed:", e);
+    note("AUDIO OFF — " + (e?.message || e) + " · free the output device, then reload");
   }
+}
+
+function showConsole() {
+  // Fall back to sane defaults so an early click (before the WS welcome) can't crash the build.
+  st = st || { room: "JAMARAMA", key: "A", scale: "major", tempo: 124, chord: "I",
+               progression: ["I", "IV", "V", "vi"], mood: {}, energy: 0, crowdCount: 0 };
+  document.getElementById("lobby").hidden = true;
+  document.getElementById("console").hidden = false;
+  buildConsole();
+  paintAll();
+}
+
+// Reject if `p` hasn't settled within `ms` — keeps a hung resume() from freezing start.
+function withTimeout(p, ms) {
+  return Promise.race([p,
+    new Promise((_, rej) => setTimeout(() => rej(new Error("audio device busy (timed out)")), ms))]);
+}
+
+// Non-blocking banner for audio problems (the console is already usable underneath).
+function note(msg) {
+  let el = document.getElementById("audionote");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "audionote";
+    el.style.cssText = "position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:9999;" +
+      "background:#F4533A;color:#fff;font:600 13px/1.3 ui-monospace,monospace;padding:10px 16px;" +
+      "border-radius:999px;box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:90vw;text-align:center";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
 }
 
 function onSixteenth(time) {
