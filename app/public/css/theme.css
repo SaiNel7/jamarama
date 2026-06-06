@@ -1,0 +1,58 @@
+/* JAMARAMA neo-brutalist theme — see DESIGN.md */
+@import url("https://fonts.googleapis.com/css2?family=Archivo:wght@600;800;900&family=Space+Mono:wght@400;700&display=swap");
+
+:root {
+  --cream:#ECE4CF; --card:#F7F1E0; --ink:#16120D; --gray:#9AA0A0;
+  --harmony:#1BA88A; --harmony-lt:#5FD0A8;
+  --lead:#F4533A; --crowd:#9B7BE6; --crowd-dk:#7C4DD0; --groove:#F5B82E;
+  --darker:#1E2A3A; --brighter:#F5B82E; --heavier:#F4533A; --dreamier:#ABE0C4;
+  --border:3px solid var(--ink); --thick:4px solid var(--ink);
+  --shadow:6px 6px 0 var(--ink); --shadow-sm:4px 4px 0 var(--ink); --shadow-lg:8px 8px 0 var(--ink);
+  --radius:20px; --radius-lg:28px;
+  --role:var(--crowd); /* overridden per role */
+}
+
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html,body { margin:0; height:100%; }
+body {
+  background:var(--cream); color:var(--ink);
+  font-family:"Archivo",system-ui,sans-serif; font-weight:800;
+  overflow-x:hidden; touch-action:manipulation; user-select:none;
+}
+.mono { font-family:"Space Mono",monospace; font-weight:700; }
+.caps { text-transform:uppercase; letter-spacing:-.01em; }
+
+/* ---- status bar (phone) ---- */
+.statusbar { display:flex; justify-content:space-between; align-items:center;
+  padding:14px 18px 0; font-family:"Space Mono",monospace; font-weight:700; font-size:13px; }
+.brand { letter-spacing:1px; }
+
+.toppill { display:flex; align-items:center; gap:12px; margin:14px 18px 0;
+  background:var(--card); border:var(--thick); border-radius:var(--pill,999px);
+  box-shadow:var(--shadow-sm); padding:12px 18px; }
+.toppill .chip { width:34px; height:34px; border-radius:9px; background:var(--role); border:var(--border); }
+.toppill .name { font-size:26px; font-weight:900; letter-spacing:-.02em; }
+.toppill .live { margin-left:auto; display:flex; align-items:center; gap:7px;
+  font-family:"Space Mono",monospace; font-size:14px; }
+.toppill .dot { width:13px; height:13px; border-radius:50%; background:var(--role);
+  transition:transform .08s ease; }
+.toppill .dot.pulse { transform:scale(1.7); }
+
+.players { display:flex; gap:8px; margin:14px 18px 0; }
+.players .sq { width:34px; height:34px; border-radius:9px; background:var(--card);
+  border:var(--border); box-shadow:var(--shadow-sm); }
+
+/* ---- generic chunky button / card ---- */
+.btn, .card {
+  border:var(--thick); border-radius:var(--radius); box-shadow:var(--shadow);
+  background:var(--card); color:var(--ink); font-weight:900;
+  transition:transform .06s ease, box-shadow .06s ease;
+}
+.btn { cursor:pointer; }
+.btn:active, .btn.held { transform:translate(6px,6px); box-shadow:0 0 0 var(--ink); }
+
+.hint { font-family:"Space Mono",monospace; font-weight:400; font-size:15px;
+  color:#5a564d; padding:0 18px; }
+
+/* fully-rounded pill helper */
+:root { --pill:999px; }

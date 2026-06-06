@@ -1,6 +1,8 @@
 # JAMARAMA — Master Write-Up
 
-> **Canonical document.** Single source of truth for what Jamarama is and how it works. Reflects the final locked architecture after the tempo test. **Where earlier docs differ — Magenta-on-beat, master-clock-syncs-Magenta, one-generator-as-the-bed — this one wins.**
+> ⚠️ **SUPERSEDED by [`MASTER_SPEC_V3.md`](./MASTER_SPEC_V3.md) (canonical).** Kept for history. v3 merges this doc with the external "Master Spec v2", resolves all conflicts (BRAIN/VOICE split, neural-lead-as-gated-upgrade, Audiotool-behind-an-adapter), and corrects the Magenta facts against installed MRT2 v2.0.2. Read v3, not this.
+>
+> _Original note:_ Single source of truth for what Jamarama is and how it works. Reflects the final locked architecture after the tempo test. **Where earlier docs differ — Magenta-on-beat, master-clock-syncs-Magenta, one-generator-as-the-bed — this one wins.**
 
 ---
 

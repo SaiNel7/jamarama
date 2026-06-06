@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<title>JAMARAMA</title>
+<link rel="stylesheet" href="/css/theme.css" />
+<style>
+  #screen { min-height:100dvh; display:flex; flex-direction:column; padding-bottom:24px; }
+  #connecting { flex:1; display:flex; align-items:center; justify-content:center;
+    flex-direction:column; gap:10px; font-family:"Space Mono",monospace; }
+  #connecting .big { font-family:"Archivo"; font-weight:900; font-size:34px; letter-spacing:-.02em; }
+</style>
+</head>
+<body>
+  <div id="screen">
+    <div id="connecting"><div class="big">JAMARAMA</div><div class="mono">joining the jam…</div></div>
+  </div>
+  <script type="module" src="/js/controllers.js"></script>
+</body>
+</html>

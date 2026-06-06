@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>JAMARAMA — Host</title>
+<link rel="stylesheet" href="/css/theme.css" />
+<link rel="stylesheet" href="/css/host.css" />
+</head>
+<body>
+  <!-- ================= LOBBY ================= -->
+  <section id="lobby">
+    <div class="lobby-wrap">
+      <div class="lobby-left">
+        <div class="logo xl">JAMARAMA</div>
+        <div class="mono lobby-tag">the aux war, solved — your taste is your instrument</div>
+        <div class="lobby-room">
+          <div class="infobox"><div class="k">ROOM</div><div class="v" id="lb-room">—</div></div>
+          <div class="infobox"><div class="k">KEY</div><div class="v" id="lb-key">—</div></div>
+          <div class="infobox"><div class="k">TEMPO</div><div class="v"><span id="lb-tempo">—</span> BPM</div></div>
+        </div>
+        <div class="ptitle">players in the jam</div>
+        <div id="lb-roster" class="lb-roster"></div>
+        <button id="start" class="go">▶ START THE JAM</button>
+        <div class="mono" style="font-size:13px;color:#5a564d">tap to enable audio · phones can join before & after</div>
+      </div>
+      <div class="lobby-qr card">
+        <div class="ptitle" style="text-align:center">scan to join · jam·lan</div>
+        <img id="qr" alt="join QR" />
+        <div class="mono" id="joinurl"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= CONSOLE ================= -->
+  <main id="console" hidden>
+    <svg id="waves" preserveAspectRatio="none" viewBox="0 0 1200 800"></svg>
+
+    <header class="hdr">
+      <div class="logo">JAMARAMA</div><div class="hostpill mono caps">HOST</div>
+      <div class="infobox grow"><div class="k">ROOM</div><div class="v" id="room">—</div></div>
+      <div class="infobox"><div class="k">KEY</div><div class="v" id="key">—</div></div>
+      <div class="infobox"><div class="k">TEMPO</div><div class="v"><span id="tempo">—</span> BPM</div></div>
+      <div class="hdr-right">
+        <div class="heartbeat"><div class="squares" id="squares"></div><div class="mono lbl">BAR HEARTBEAT</div></div>
+        <div class="rdots" id="dots"></div>
+      </div>
+    </header>
+
+    <div class="grid">
+      <!-- LEFT -->
+      <div class="col">
+        <div class="sec">
+          <span class="pill harmony">HARMONY</span><span class="seclbl mono">chord wheel</span>
+          <div id="wheel" class="wheel"></div>
+        </div>
+        <div class="sec">
+          <span class="pill crowd">CROWD</span><span class="seclbl mono">live poll · <span id="voting">0</span> voting</span>
+          <div id="poll" class="poll"></div>
+          <div class="collective">
+            <div class="mono caps lbl">COLLECTIVE ENERGY</div>
+            <div class="meter"><div id="coll" class="meterfill"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CENTER -->
+      <div class="col">
+        <div class="sec grow">
+          <span class="pill groove">MUSIC READOUT</span><span class="seclbl mono">live notes</span>
+          <span class="legend"><i class="sw" style="background:var(--harmony)"></i>HARMONY
+            <i class="sw" style="background:var(--lead)"></i>LEAD</span>
+          <div id="roll" class="roll"></div>
+        </div>
+        <div class="sec">
+          <span class="pill groove">GROOVE</span><span class="seclbl mono">your instrument · X/Y</span>
+          <div id="xy" class="xy">
+            <div class="xy-rd mono" id="xyrd">x.50 · y.50</div>
+            <div class="xy-ylbl mono">CHILL<br>HYPE</div>
+            <div class="xy-xlbl mono">SPARSE → DENSE</div>
+            <div id="xydot" class="xydot"></div>
+            <div class="xy-cross-h"></div><div class="xy-cross-v"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- RIGHT -->
+      <div class="col">
+        <div class="sec grow">
+          <span class="pill lead">LEAD</span><span class="seclbl mono">keyboard</span>
+          <div class="response"><span class="pill lead sm"><span class="dot"></span>RESPONSE</span>
+            <span class="seclbl mono">looping · play to change</span></div>
+          <div id="leadkeys" class="leadkeys"></div>
+          <div class="mono caps lbl" style="margin-top:8px">CAPTURED MOTIF</div>
+          <div id="motif" class="motif"></div>
+        </div>
+        <div class="sec">
+          <span class="pill crowd">CROWD</span><span class="seclbl mono">→ the mix</span>
+          <div id="mix" class="mix"></div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="/vendor/tone/Tone.js"></script>
+  <script type="module" src="/js/host.js"></script>
+</body>
+</html>

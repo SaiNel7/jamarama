@@ -1,0 +1,14 @@
+# python env — 930MB and not portable (absolute paths); recreate with uv
+.venv/
+__pycache__/
+*.pyc
+
+# model weights live in ~/Documents/Magenta, not the repo
+
+# misc
+.DS_Store
+*.log
+*.output
+app/hosttest.mjs
+
+# NOTE: node_modules/ and external/ ARE committed (bundled for zero-install).
