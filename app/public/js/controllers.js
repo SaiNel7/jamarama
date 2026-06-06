@@ -73,7 +73,8 @@ function syncMyAvatar() {           // server roster = truth (handles rejected c
   if (mine) myAvatar = mine.avatar || "";
 }
 function renderLobby() {
-  myName ||= `PLAYER ${me.id}`;
+  // default name comes from the server (silly alliterative pick, e.g. "KILLER KANGAROO")
+  myName ||= roster.find((r) => r.id === me.id)?.name || `PLAYER ${me.id}`;
   syncMyAvatar();
   screen.innerHTML = slimHeader(me.role.toUpperCase()) + `
     <div class="lobby">

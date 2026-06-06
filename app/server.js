@@ -75,6 +75,43 @@ function randomAvatar() {
   return free.length ? free[Math.floor(Math.random() * free.length)] : "";
 }
 
+// GitHub-repo-style silly default names: pick a noun, pair it with an
+// alliterative adjective — "GALLOPING GARY", "KILLER KANGAROO". Players can
+// still type their own; this just replaces the bland "PLAYER N" placeholder.
+const NAME_ADJ = [
+  "bouncing", "bashful", "boogieing", "cosmic", "crunchy", "cranky",
+  "dancing", "dapper", "dizzy", "funky", "fuzzy", "feral",
+  "groovy", "galloping", "giggling", "howling", "hasty", "hyper",
+  "jazzy", "jumpy", "jolly", "killer", "kooky", "kinetic",
+  "loopy", "lunar", "lyrical", "mellow", "mighty", "moody",
+  "noodling", "nimble", "nocturnal", "prancing", "peppy", "psychedelic",
+  "rowdy", "radical", "rumbling", "sassy", "shredding", "snazzy",
+  "thumping", "turbo", "twangy", "vibey", "velvet", "virtuoso",
+  "wobbly", "wailing", "wiggly",
+];
+const NAME_NOUN = [
+  "banjo", "bongo", "badger", "cowbell", "capybara", "conga",
+  "disco", "dingo", "didgeridoo", "flamingo", "falsetto", "ferret",
+  "gary", "gecko", "gibbon", "hamster", "hippo", "harmonica",
+  "jukebox", "jellyfish", "jaguar", "kangaroo", "kazoo", "koala",
+  "llama", "lemur", "lute", "mongoose", "maraca", "moose",
+  "narwhal", "newt", "nightingale", "platypus", "piccolo", "panda",
+  "raccoon", "riff", "rhino", "saxophone", "sloth", "synth",
+  "theremin", "toucan", "tuba", "viola", "vulture", "vibraphone",
+  "walrus", "wombat", "washboard",
+];
+function randomName() {
+  const taken = new Set([...clients.values()].map((c) => c.name));
+  for (let tries = 0; tries < 24; tries++) {
+    const noun = NAME_NOUN[Math.floor(Math.random() * NAME_NOUN.length)];
+    const allit = NAME_ADJ.filter((a) => a[0] === noun[0]);
+    const pool = allit.length ? allit : NAME_ADJ;
+    const name = `${pool[Math.floor(Math.random() * pool.length)]} ${noun}`.toUpperCase();
+    if (!taken.has(name)) return name;
+  }
+  return `PLAYER ${nextId}`;   // 24 collisions in a row — the room is packed, fall back
+}
+
 // Phone role assignment: first → harmony, second → lead, everyone else → crowd.
 function assignRole() {
   const roles = [...clients.values()].map((c) => c.role);
@@ -94,6 +131,14 @@ function crowdCount() {
 }
 function hostCount() {
   return [...clients.values()].filter((c) => c.role === "groove").length;
+}
+// Connection-count label for the log: "2 connected" alone reads as ghost players
+// when it's really just the host tab + the texture engine. Spell out who's here.
+function who() {
+  const players = [...clients.values()].filter((c) => c.role !== "groove" && c.role !== "texture").length;
+  const extras = [hostCount() && "host", [...clients.values()].some((c) => c.role === "texture") && "texture"]
+    .filter(Boolean).join("+");
+  return `${players} player${players === 1 ? "" : "s"}${extras ? " + " + extras : ""}`;
 }
 
 function send(ws, obj) {
@@ -210,7 +255,7 @@ wss.on("connection", (ws, req) => {
           c = { ...prev, ws };
           id = c.id;
           clients.set(id, c);
-          console.log(`+ ${c.role} #${id} resumed (${ip}) (${clients.size} connected)`);
+          console.log(`+ ${c.role} #${id} resumed (${ip}) (${who()})`);
         } else {
           id = nextId++;
           const role = (msg.role === "host" || msg.role === "texture") ? (msg.role === "host" ? "groove" : "texture") : assignRole();
@@ -218,10 +263,10 @@ wss.on("connection", (ws, req) => {
           // ready via control:ready. Host and texture count as always-ready.
           const isPlayer = role !== "groove" && role !== "texture";
           c = { ws, id, role, color: ROLE_COLORS[role],
-                name: isPlayer ? `PLAYER ${id}` : role.toUpperCase(),
+                name: isPlayer ? randomName() : role.toUpperCase(),
                 avatar: isPlayer ? randomAvatar() : "", taste: "", ready: !isPlayer };
           clients.set(id, c);
-          console.log(`+ ${c.role} #${id} (${ip}) (${clients.size} connected)`);
+          console.log(`+ ${c.role} #${id} (${ip}) (${who()})`);
         }
         if (sid) sessions.set(sid, c);
         send(ws, { type: "welcome", id, role: c.role, color: c.color, state, roster: roster(), crowdCount: crowdCount() });
@@ -267,7 +312,7 @@ wss.on("connection", (ws, req) => {
     if (id == null || clients.get(id)?.ws !== ws) return;
     const c = clients.get(id);
     clients.delete(id);
-    console.log(`- ${c?.role} #${id} (${clients.size} connected)`);
+    console.log(`- ${c?.role} #${id} (${who()})`);
     broadcast({ type: "roster", roster: roster(), crowdCount: crowdCount() });
     // A leaving player's prompt leaves the blend — but only if they're really gone.
     // Flaky links resume within ~1s (same id); without the grace window every blip
