@@ -5,8 +5,8 @@
   "description": "Real-time multiplayer jam — host + phone controllers over LAN",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --watch --env-file-if-exists=.env server.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.102.0",

@@ -8,6 +8,9 @@ __pycache__/
 # generated A/B sweep audio (engine/sweep_prompts.py, prototype/sweep_texture.py)
 tex_*.wav
 
+# secrets — ANTHROPIC_API_KEY etc. live in app/.env (loaded by npm start); never commit
+app/.env
+
 # misc
 .DS_Store
 *.log
