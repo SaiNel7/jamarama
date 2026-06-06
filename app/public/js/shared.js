@@ -4,13 +4,21 @@ export class Bus {
     this.role = role;
     this.handlers = {};
     this.id = null;
+    // Stable per-tab session id: reconnects (and page reloads) reclaim the same
+    // player on the server instead of churning the roster as a new one each time.
+    // sessionStorage is per-tab, so two tabs on one phone stay separate players.
+    try {
+      let sid = sessionStorage.getItem("jam-sid");
+      if (!sid) { sid = crypto.randomUUID(); sessionStorage.setItem("jam-sid", sid); }
+      this.sid = sid;
+    } catch { this.sid = Math.random().toString(36).slice(2) + Date.now().toString(36); }
     this.connect();
   }
   connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws"; // match page protocol (tunnel-safe)
     const url = `${proto}://${location.host}`;
     this.ws = new WebSocket(url);
-    this.ws.onopen = () => this.send({ type: "hello", role: this.role });
+    this.ws.onopen = () => this.send({ type: "hello", role: this.role, sid: this.sid });
     this.ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === "welcome") this.id = msg.id;

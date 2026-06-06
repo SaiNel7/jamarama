@@ -114,7 +114,9 @@ const app = express();
 // log page/info hits (not assets) so we can see if a phone actually reaches the server
 app.use((req, _res, next) => {
   if (["/", "/join", "/info"].includes(req.path))
-    console.log(`  HTTP ${req.method} ${req.path} ← ${req.ip}`);
+    // cf-connecting-ip = the phone's real IP when the request comes through the
+    // cloudflare tunnel (otherwise everything logs as the tunnel's 127.0.0.1).
+    console.log(`  HTTP ${req.method} ${req.path} ← ${req.headers["cf-connecting-ip"] || req.ip}`);
   next();
 });
 app.use(express.static(join(__dirname, "public")));
@@ -181,9 +183,16 @@ async function prebakeFromTastes() {
 const server = createServer(app);
 
 // --- WebSocket ---
+// Session resume: phones send a stable `sid` in hello. Flaky links (cellular through
+// the cloudflare tunnel) drop + auto-reconnect constantly; without this every
+// reconnect minted a NEW player (new id/name, profile + ready wiped) and churned the
+// roster. With it, a reconnect reclaims the same player record — id, role, name,
+// avatar, taste, ready all survive.
+const sessions = new Map(); // sid -> player record (latest, incl. disconnected)
 const wss = new WebSocketServer({ server });
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
   let id = null;
+  const ip = req.headers["cf-connecting-ip"] || req.socket.remoteAddress; // real phone IP through the tunnel
 
   ws.on("message", (raw) => {
     let msg;
@@ -191,19 +200,33 @@ wss.on("connection", (ws) => {
 
     switch (msg.type) {
       case "hello": {
-        id = nextId++;
-        const role = (msg.role === "host" || msg.role === "texture") ? (msg.role === "host" ? "groove" : "texture") : assignRole();
-        const color = ROLE_COLORS[role];
-        // Lobby/onboarding fields: name + avatar set via control:profile, taste +
-        // ready via control:ready. Host and texture count as always-ready.
-        const isPlayer = role !== "groove" && role !== "texture";
-        clients.set(id, { ws, id, role, color,
-                          name: isPlayer ? `PLAYER ${id}` : role.toUpperCase(),
-                          avatar: isPlayer ? randomAvatar() : "", taste: "", ready: !isPlayer });
-        send(ws, { type: "welcome", id, role, color, state, roster: roster(), crowdCount: crowdCount() });
+        const sid = typeof msg.sid === "string" ? msg.sid.slice(0, 64) : null;
+        const prev = sid ? sessions.get(sid) : null;
+        let c;
+        if (prev) {
+          // Reclaim: kick any zombie socket still holding this player, keep the identity.
+          const live = clients.get(prev.id);
+          if (live && live.ws !== ws) { try { live.ws.terminate(); } catch {} }
+          c = { ...prev, ws };
+          id = c.id;
+          clients.set(id, c);
+          console.log(`+ ${c.role} #${id} resumed (${ip}) (${clients.size} connected)`);
+        } else {
+          id = nextId++;
+          const role = (msg.role === "host" || msg.role === "texture") ? (msg.role === "host" ? "groove" : "texture") : assignRole();
+          // Lobby/onboarding fields: name + avatar set via control:profile, taste +
+          // ready via control:ready. Host and texture count as always-ready.
+          const isPlayer = role !== "groove" && role !== "texture";
+          c = { ws, id, role, color: ROLE_COLORS[role],
+                name: isPlayer ? `PLAYER ${id}` : role.toUpperCase(),
+                avatar: isPlayer ? randomAvatar() : "", taste: "", ready: !isPlayer };
+          clients.set(id, c);
+          console.log(`+ ${c.role} #${id} (${ip}) (${clients.size} connected)`);
+        }
+        if (sid) sessions.set(sid, c);
+        send(ws, { type: "welcome", id, role: c.role, color: c.color, state, roster: roster(), crowdCount: crowdCount() });
         broadcast({ type: "roster", roster: roster(), crowdCount: crowdCount() }, id);
-        console.log(`+ ${role} #${id} (${clients.size} connected)`);
-        if (role === "groove") onHostConnect();   // host tab opened → bring the texture engine up
+        if (c.role === "groove") onHostConnect();   // host tab opened → bring the texture engine up
         break;
       }
       // Host clock → fan out to phones so they pulse in time.
@@ -239,14 +262,18 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
-    if (id != null) {
-      const c = clients.get(id);
-      clients.delete(id);
-      console.log(`- ${c?.role} #${id} (${clients.size} connected)`);
-      broadcast({ type: "roster", roster: roster(), crowdCount: crowdCount() });
-      if (c?.taste) recomputeTaste();  // a leaving player's prompt leaves the blend
-      if (c?.role === "groove" && hostCount() === 0) onHostGone();  // last host tab closed → stop the engine
-    }
+    // Only tear down if WE still own the player — a resumed connection replaces the
+    // record's ws, and the old socket's late close must not delete the new one.
+    if (id == null || clients.get(id)?.ws !== ws) return;
+    const c = clients.get(id);
+    clients.delete(id);
+    console.log(`- ${c?.role} #${id} (${clients.size} connected)`);
+    broadcast({ type: "roster", roster: roster(), crowdCount: crowdCount() });
+    // A leaving player's prompt leaves the blend — but only if they're really gone.
+    // Flaky links resume within ~1s (same id); without the grace window every blip
+    // would yank their prompt out of the texture conditioning and morph the bed.
+    if (c?.taste) setTimeout(() => { if (!clients.has(id)) recomputeTaste(); }, 3000);
+    if (c?.role === "groove" && hostCount() === 0) onHostGone();  // last host tab closed → stop the engine
   });
 });
 
