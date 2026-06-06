@@ -9,6 +9,7 @@
     "dev": "node --watch server.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.102.0",
     "express": "^4.19.2",
     "puppeteer-core": "^25.1.0",
     "qrcode": "^1.5.4",

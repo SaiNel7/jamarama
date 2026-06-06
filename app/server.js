@@ -10,6 +10,7 @@ import { dirname, join } from "path";
 import { spawn } from "child_process";
 import { existsSync } from "fs";
 import QRCode from "qrcode";
+import { transformPrompts } from "./taste.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -24,15 +25,23 @@ function lanIP() {
   return "127.0.0.1";
 }
 const IP = lanIP();
-// PUBLIC_URL (e.g. a cloudflared tunnel) overrides the LAN address so the QR works off-network.
-const BASE = process.env.PUBLIC_URL ? process.env.PUBLIC_URL.replace(/\/$/, "") : `http://${IP}:${PORT}`;
-const JOIN_URL = `${BASE}/join`;
+// Join URL resolution (phones often sit on networks that block device-to-device, e.g. eduroam):
+//   1. PUBLIC_URL env — explicit override, used as-is.
+//   2. cloudflared quick tunnel — spawned automatically at startup (the default);
+//      `base` flips to the tunnel URL once it's up. Disable with NO_TUNNEL=1.
+//   3. LAN IP — immediate fallback, and the final answer if cloudflared is missing/offline.
+let base = process.env.PUBLIC_URL ? process.env.PUBLIC_URL.replace(/\/$/, "") : `http://${IP}:${PORT}`;
+const joinUrl = () => `${base}/join`;
+// True while we're still waiting on the cloudflared URL — the host page shows a
+// "creating link…" state instead of ever flashing the LAN address.
+let tunnelPending = !process.env.PUBLIC_URL && !process.env.NO_TUNNEL;
 
 // --- room state (single room for the demo) ---
 const ROLE_COLORS = {
   groove: "#F5B82E", harmony: "#1BA88A", lead: "#F4533A", crowd: "#9B7BE6",
 };
 const state = {
+  phase: "lobby",                   // "lobby" (pre-jam onboarding) | "jam" (host started)
   room: "BASEMENT SESSIONS",
   key: "A", scale: "major",
   tempo: 124,
@@ -52,6 +61,19 @@ const state = {
 let nextId = 1;
 const clients = new Map(); // id -> { ws, role, color, id }
 
+// Avatar pool (images in public/assets/pfps). Avatars are EXCLUSIVE: each player
+// holds at most one, a claim for a taken one is rejected, and disconnecting frees
+// it (the client simply leaves the map — taken-ness is always derived live).
+const AVATARS = ["pickle", "duck", "frog", "dog", "cat", "rocker", "alien", "cow", "pig", "rasta", "cantor", "baba"];
+function takenAvatars(exceptId = null) {
+  return new Set([...clients.values()].filter((c) => c.id !== exceptId && c.avatar).map((c) => c.avatar));
+}
+function randomAvatar() {
+  const taken = takenAvatars();
+  const free = AVATARS.filter((a) => !taken.has(a));
+  return free.length ? free[Math.floor(Math.random() * free.length)] : "";
+}
+
 // Phone role assignment: first → harmony, second → lead, everyone else → crowd.
 function assignRole() {
   const roles = [...clients.values()].map((c) => c.role);
@@ -63,7 +85,8 @@ function assignRole() {
 function roster() {
   // 'texture' (the MRT2 engine) is not a player — keep it out of the roster.
   return [...clients.values()].filter((c) => c.role !== "texture")
-    .map((c) => ({ id: c.id, role: c.role, color: c.color }));
+    .map((c) => ({ id: c.id, role: c.role, color: c.color,
+                   name: c.name, avatar: c.avatar, ready: c.ready, taste: c.taste }));
 }
 function crowdCount() {
   return [...clients.values()].filter((c) => c.role === "crowd").length;
@@ -100,7 +123,9 @@ app.use("/vendor/tone", express.static(join(__dirname, "node_modules/tone/build"
 app.get("/", (_req, res) => res.sendFile(join(__dirname, "public/host.html")));
 app.get("/join", (_req, res) => res.sendFile(join(__dirname, "public/join.html")));
 app.get("/info", async (_req, res) => {
-  res.json({ ip: IP, port: PORT, joinUrl: JOIN_URL, qr: await QRCode.toDataURL(JOIN_URL, { margin: 1, width: 320 }) });
+  const ju = joinUrl();   // re-read every request: flips to the tunnel URL once it's up
+  res.json({ ip: IP, port: PORT, joinUrl: ju, pending: tunnelPending,
+             qr: await QRCode.toDataURL(ju, { margin: 1, width: 320 }) });
 });
 
 const server = createServer(app);
@@ -119,7 +144,12 @@ wss.on("connection", (ws) => {
         id = nextId++;
         const role = (msg.role === "host" || msg.role === "texture") ? (msg.role === "host" ? "groove" : "texture") : assignRole();
         const color = ROLE_COLORS[role];
-        clients.set(id, { ws, id, role, color });
+        // Lobby/onboarding fields: name + avatar set via control:profile, taste +
+        // ready via control:ready. Host and texture count as always-ready.
+        const isPlayer = role !== "groove" && role !== "texture";
+        clients.set(id, { ws, id, role, color,
+                          name: isPlayer ? `PLAYER ${id}` : role.toUpperCase(),
+                          avatar: isPlayer ? randomAvatar() : "", taste: "", ready: !isPlayer });
         send(ws, { type: "welcome", id, role, color, state, roster: roster(), crowdCount: crowdCount() });
         broadcast({ type: "roster", roster: roster(), crowdCount: crowdCount() }, id);
         console.log(`+ ${role} #${id} (${clients.size} connected)`);
@@ -145,6 +175,12 @@ wss.on("connection", (ws) => {
         if (msg.action === "tempo") state.tempo = msg.payload;
         if (msg.action === "chord") state.chord = msg.payload;     // host advances the playhead on the downbeat
         if (msg.action === "taste") state.taste = msg.payload;
+        if (msg.action === "start" && state.phase === "lobby") {   // lobby → jam (host UI gates this on all-players-ready)
+          state.phase = "jam";
+          const players = roster().filter((p) => p.role !== "groove");
+          console.log(`  [lobby] host started the jam (${players.filter((p) => p.ready).length}/${players.length} players ready)`);
+          recomputeTaste();                                        // async; broadcasts again when transforms land
+        }
         broadcastState();
         break;
       }
@@ -157,6 +193,7 @@ wss.on("connection", (ws) => {
       clients.delete(id);
       console.log(`- ${c?.role} #${id} (${clients.size} connected)`);
       broadcast({ type: "roster", roster: roster(), crowdCount: crowdCount() });
+      if (c?.taste) recomputeTaste();  // a leaving player's prompt leaves the blend
       if (c?.role === "groove" && hostCount() === 0) onHostGone();  // last host tab closed → stop the engine
     }
   });
@@ -186,7 +223,41 @@ function applyControl(msg, id) {
     case "energy":         // crowd: hold-to-raise (delta 0..1)
       state.energy = Math.max(0, Math.min(1, state.energy + (payload.delta || 0)));
       break;
+    case "profile": {      // lobby: name + avatar (avatar claims are exclusive — a
+      const c = clients.get(id);                 // claim for one another player holds is silently
+      if (!c) break;                             // rejected; the roster echo corrects the phone)
+      if (typeof payload.name === "string") c.name = payload.name.trim().slice(0, 24) || c.name;
+      if (typeof payload.avatar === "string" && AVATARS.includes(payload.avatar)
+          && !takenAvatars(id).has(payload.avatar)) c.avatar = payload.avatar;
+      break;
+    }
+    case "ready": {        // lobby: ready toggle + optional taste prompt ("" = vibe with the blend)
+      const c = clients.get(id);
+      if (!c) break;
+      c.ready = Boolean(payload.ready);
+      if (typeof payload.taste === "string") c.taste = payload.taste.trim().slice(0, 200);
+      recomputeTaste();    // async; broadcasts when transforms land
+      break;
+    }
   }
+}
+
+// Blend every player's taste prompt into state.taste (the MRT2 style conditioning).
+// Transforms run through app/taste.js (TASTE_MODE=append|llm); falls back to the
+// default bed when nobody wrote anything. Guarded against out-of-order async
+// completions so a slow LLM call can't clobber a newer recompute.
+const DEFAULT_TASTE = [...state.taste];
+let tasteGen = 0;
+async function recomputeTaste() {
+  const prompts = [...clients.values()]
+    .filter((c) => c.role !== "texture" && c.role !== "groove" && c.taste)
+    .map((c) => c.taste);
+  const gen = ++tasteGen;
+  const next = prompts.length ? await transformPrompts(prompts) : DEFAULT_TASTE;
+  if (gen !== tasteGen) return; // a newer recompute superseded this one
+  state.taste = next;
+  console.log(`  [taste] blend → ${JSON.stringify(next)}`);
+  broadcastState();
 }
 
 // Crowd energy decays slowly toward calm so "hold to raise" feels live.
@@ -197,10 +268,44 @@ setInterval(() => {
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`\n  JAMARAMA host running`);
   console.log(`  Host screen : http://localhost:${PORT}`);
-  console.log(`  Phones join : ${JOIN_URL}\n`);
+  console.log(`  Phones join : ${tunnelPending ? "(starting cloudflare tunnel…)" : joinUrl()}`);
+  startTunnel();
   // The texture engine is now started on demand when the host tab connects (onHostConnect)
   // and stopped when the last host tab closes — so MRT2 never runs without a host present.
 });
+
+// --- cloudflared quick tunnel (default join path — works from any network) ---
+// Spawned at startup unless PUBLIC_URL is set or NO_TUNNEL=1. The QR/banner start
+// on the LAN URL and flip to https://<random>.trycloudflare.com when the tunnel
+// connects (~2-5s); the host page re-polls /info so its QR updates itself. If
+// cloudflared is missing or there's no internet, we just stay on the LAN URL.
+let tunnel = null;
+function startTunnel() {
+  if (process.env.PUBLIC_URL) return;                                       // explicit override wins
+  if (process.env.NO_TUNNEL) { console.log("  [tunnel] disabled (NO_TUNNEL=1)\n"); return; }
+  const child = spawn("cloudflared", ["tunnel", "--url", `http://localhost:${PORT}`]);
+  tunnel = child;
+  const sniff = (d) => {                                                    // cloudflared logs to stderr
+    const m = d.toString().match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+    if (m) {
+      base = m[0];
+      tunnelPending = false;
+      console.log(`\n  [tunnel] phones join : ${joinUrl()}  (QR updated)\n`);
+    }
+  };
+  child.stderr.on("data", sniff);
+  child.stdout.on("data", sniff);
+  child.on("error", () => {
+    tunnelPending = false;   // no tunnel coming — host page falls back to showing the LAN URL
+    console.log(`  [tunnel] cloudflared not found — phones join on the LAN: ${joinUrl()} (brew install cloudflared)\n`);
+  });
+  child.on("exit", (c) => {
+    if (tunnel === child) tunnel = null;
+    tunnelPending = false;
+    if (!process.env.PUBLIC_URL) base = `http://${IP}:${PORT}`;
+    if (c) console.log(`  [tunnel] exited (code ${c}) — phones join on the LAN: ${joinUrl()}\n`);
+  });
+}
 
 // --- spawn the MRT2 texture engine as a child so one command runs the whole stack ---
 // Disable with NO_TEXTURE=1 (e.g. UI-only testing). It connects back over WS for room
@@ -248,5 +353,5 @@ function stopTexture() {
   console.log("  [texture] no host connected — stopping engine\n");
   texture.kill("SIGTERM");
 }
-for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { texture?.kill("SIGTERM"); process.exit(0); });
-process.on("exit", () => texture?.kill("SIGTERM"));
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { texture?.kill("SIGTERM"); tunnel?.kill("SIGTERM"); process.exit(0); });
+process.on("exit", () => { texture?.kill("SIGTERM"); tunnel?.kill("SIGTERM"); });

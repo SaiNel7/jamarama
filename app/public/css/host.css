@@ -14,14 +14,25 @@
 #lobby[hidden], #console[hidden] { display:none; }
 
 /* ---------- LOBBY ---------- */
-#lobby { min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:40px; }
-.lobby-wrap { display:grid; grid-template-columns:1fr 380px; gap:48px; max-width:1100px; width:100%; align-items:center; }
+#lobby { min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:40px;
+  position:relative; overflow:hidden; }
+/* character lineup pinned to the bottom of the landing page (transparent bg, decorative) */
+#lobby::after { content:""; position:absolute; left:0; right:0; bottom:-48px; height:min(48vh, 460px);
+  background:url("/assets/bgd_overlay.png") bottom center / contain no-repeat; pointer-events:none; }
+.lobby-wrap { display:grid; grid-template-columns:1fr 380px; gap:48px; max-width:1100px; width:100%;
+  align-items:center; position:relative; z-index:1; }
 .lobby-tag { font-size:16px; color:#5a564d; margin:10px 0 28px; }
 .lobby-room { display:flex; gap:14px; margin-bottom:28px; }
 .lb-roster { display:flex; flex-wrap:wrap; gap:10px; margin:12px 0 28px; min-height:44px; }
+/* Translucent yellow while players are still readying up (start is GATED until the
+   whole lobby is ready); full yellow + clickable once everyone's set. */
 .go { background:var(--groove); color:var(--ink); border:var(--thick); border-radius:999px; padding:22px 44px;
-  font-size:30px; font-weight:900; box-shadow:var(--shadow-lg); cursor:pointer; display:block; }
-.go:active { transform:translate(8px,8px); box-shadow:0 0 0 var(--ink); }
+  font-size:30px; font-weight:900; box-shadow:var(--shadow-lg); display:block;
+  margin-bottom:22px; /* clear the drop shadow so the caption below doesn't crowd it */
+  opacity:.60; cursor:not-allowed; transition:opacity .2s ease; }
+.go.shake { animation:goshake .3s ease; }
+@keyframes goshake { 25% { transform:translateX(-6px); } 75% { transform:translateX(6px); } }
+/* press effect lives on .go.allready:active (bottom of file) — gated button doesn't press */
 .lobby-qr { display:flex; flex-direction:column; gap:14px; padding:22px; }
 .lobby-qr #qr { width:100%; border:var(--border); border-radius:14px; image-rendering:pixelated; }
 .lobby-qr #joinurl { font-size:12px; word-break:break-all; color:#5a564d; }
@@ -120,3 +131,19 @@
 .fader .fill { position:absolute; left:0; right:0; bottom:0; }
 .fader .cap { position:absolute; left:-3px; right:-3px; height:6px; background:var(--ink); }
 .fader .nm { font-size:11px; font-weight:900; }
+
+/* ---------- lobby ready states + taste readout ---------- */
+.lb-chip { color:#fff; border:var(--border); box-shadow:var(--shadow-sm); border-radius:18px;
+  padding:8px 16px; font-size:14px; opacity:.6; display:inline-flex; flex-direction:column;
+  gap:2px; align-items:flex-start; max-width:260px; }
+.lb-chip.rdy { opacity:1; }
+.lb-chip .top { display:flex; align-items:center; gap:6px; }
+.lb-chip .chip-av { width:24px; height:24px; border-radius:7px; border:2px solid var(--ink);
+  object-fit:cover; background:var(--card); }
+.lb-chip i { font-style:normal; opacity:.75; font-size:11px; }
+.lb-chip .sub { font-family:"Space Mono",monospace; font-size:10.5px; font-style:italic; opacity:.85;
+  text-transform:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
+.go.allready { opacity:1; cursor:pointer; }
+.go.allready:active { transform:translate(8px,8px); box-shadow:0 0 0 var(--ink); }
+.taste-v { font-size:13px !important; font-family:"Space Mono",monospace; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; max-width:340px; }

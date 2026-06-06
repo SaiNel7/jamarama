@@ -1,6 +1,16 @@
 /* Phone controllers — fixed viewport, NO scrolling (scroll/swipe conflicts with play). */
 html, body { height: 100%; overflow: hidden; overscroll-behavior: none; position: fixed; width: 100%; }
 #screen { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; touch-action: none; }
+
+/* Portrait lock: the web can't truly lock orientation, so when a touch device goes
+   landscape we counter-rotate the whole UI (screen + body-level overlays) 90° so it
+   always reads vertically. hover:none keeps desktop debugging windows unaffected. */
+@media screen and (orientation: landscape) and (hover: none) {
+  #screen, .picker, .avpick {
+    position: fixed; top: 0; left: 100dvw; width: 100dvh; height: 100dvw;
+    transform: rotate(90deg); transform-origin: left top;
+  }
+}
 .grow { flex: 1; min-height: 0; }
 .spacer { flex: 1; min-height: 0; }
 
@@ -105,3 +115,53 @@ html, body { height: 100%; overflow: hidden; overscroll-behavior: none; position
 .justnow .lbl { font-family: "Space Mono", monospace; font-size: 13px; color: #5a564d; text-transform: uppercase; margin-top: 18px; }
 .pills { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
 .pill-m { border: var(--border); border-radius: 999px; box-shadow: var(--shadow-sm); padding: 8px 16px; font-size: 14px; font-weight: 900; }
+
+/* ---------- LOBBY (pre-jam onboarding) ---------- */
+.lobby { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 18px 18px; display: flex;
+  flex-direction: column; gap: 8px; touch-action: pan-y; }
+.lb-lbl { font-family: "Space Mono", monospace; font-size: 12px; color: #5a564d; margin-top: 8px; }
+.lb-input { font: inherit; font-weight: 900; font-size: 20px; padding: 12px 14px; border: var(--thick);
+  border-radius: 12px; background: var(--card); box-shadow: var(--shadow-sm); width: 100%; box-sizing: border-box; }
+/* assigned avatar tile + pen badge */
+.lb-me { position: relative; width: max-content; margin: 2px 0 4px; }
+.lb-avbig { width: 88px; height: 88px; border: var(--thick); border-radius: 16px; background: var(--card);
+  box-shadow: var(--shadow-sm); overflow: hidden; }
+.lb-avbig img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.lb-pen { position: absolute; top: -10px; right: -14px; width: 38px; height: 38px; border: var(--border);
+  border-radius: 50%; background: var(--brighter); box-shadow: var(--shadow-sm); color: var(--ink);
+  display: flex; align-items: center; justify-content: center; transition: transform .08s ease; }
+.lb-pen:active { transform: translate(3px,3px); box-shadow: 0 0 0 var(--ink); }
+
+/* avatar picker overlay — exclusive pool, taken = dimmed */
+.avpick { position: fixed; inset: 0; background: rgba(22,18,13,.55); z-index: 60; display: flex; align-items: flex-end; }
+.avpick .sheet { background: var(--cream); border-top: var(--thick); border-radius: 24px 24px 0 0; width: 100%;
+  padding: 18px 18px 28px; }
+.avpick h3 { margin: 0 0 12px; font-size: 22px; font-weight: 900; }
+.avpick .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.avpick .opt { padding: 0; aspect-ratio: 1; border: var(--border); border-radius: 14px; background: var(--card);
+  box-shadow: var(--shadow-sm); overflow: hidden; transition: transform .08s ease, opacity .15s ease; }
+.avpick .opt img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.avpick .opt.sel { outline: 4px solid var(--role, var(--harmony)); outline-offset: 2px; }
+.avpick .opt.taken { opacity: .35; }
+.avpick .opt:active:not(.taken) { transform: scale(.92); }
+/* fixed height (not rows-based) so the placeholder never crops on small screens */
+.lb-taste { font: inherit; font-size: 15px; line-height: 1.35; padding: 12px 14px; border: var(--thick);
+  border-radius: 12px; background: var(--card); box-shadow: var(--shadow-sm); width: 100%;
+  box-sizing: border-box; resize: none; height: 88px; min-height: 88px; overflow-y: auto; }
+.lb-taste::placeholder { font-size: 13px; }
+.lb-ready { font: inherit; font-weight: 900; font-size: 20px; padding: 16px; margin-top: 6px; border: var(--thick);
+  border-radius: 14px; background: var(--card); box-shadow: var(--shadow-sm); }
+.lb-ready.on { background: var(--harmony); color: #fff; }
+.lb-roster { display: flex; flex-direction: column; gap: 6px; }
+.lb-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 2px solid var(--ink);
+  border-radius: 10px; background: var(--cream); opacity: .65; }
+.lb-row.rdy { opacity: 1; background: var(--card); box-shadow: 2px 2px 0 var(--ink); }
+.lb-row .av { font-size: 20px; width: 26px; text-align: center; }
+.lb-row .av img { width: 26px; height: 26px; border-radius: 7px; border: 2px solid var(--ink);
+  display: block; object-fit: cover; }
+.lb-row .nm-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.lb-row .nm { font-weight: 900; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-row .sub { font-family: "Space Mono", monospace; font-size: 10.5px; font-style: italic; color: #5a564d;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-row .role { font-size: 11px; text-transform: uppercase; }
+.lb-row .ck { font-weight: 900; width: 18px; text-align: center; }

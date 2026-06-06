@@ -36,6 +36,9 @@ npm start                 # → http://localhost:3000
   scan the QR or open `http://<LAN-IP>:3000/join`. Roles auto-assign:
   1st → Harmony, 2nd → Lead, rest → Crowd.
 - `NO_TEXTURE=1 npm start` runs the band without the Magenta engine.
+- Phones that join pre-start land in a lobby (name, avatar, taste prompt, ready);
+  prompts blend into the MRT2 texture conditioning. `TASTE_MODE=llm` +
+  `ANTHROPIC_API_KEY` enables LLM prompt rewriting — see `app/README.md`.
 
 ## Texture engine standalone checks
 

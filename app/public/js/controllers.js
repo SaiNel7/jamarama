@@ -3,11 +3,25 @@ import { Bus, diatonic } from "/js/shared.js";
 
 const bus = new Bus("auto");
 const screen = document.getElementById("screen");
+// Best-effort native portrait lock (works in standalone/fullscreen on Android);
+// everywhere else phone.css counter-rotates the UI in landscape instead.
+try { window.screen.orientation?.lock?.("portrait").catch(() => {}); } catch {}
 let me = null, st = null, roster = [];
 
-bus.on("welcome", (m) => { me = m; st = m.state; roster = m.roster || []; document.documentElement.style.setProperty("--role", m.color); render(); });
-bus.on("state", (m) => { st = m.state; roster = m.roster || roster; refresh(); });
-bus.on("roster", (m) => { roster = m.roster || roster; refreshSquares(); });
+bus.on("welcome", (m) => {
+  me = m; st = m.state; roster = m.roster || [];
+  document.documentElement.style.setProperty("--role", m.color);
+  // Pre-jam: onboard in the lobby. Late joiners (phase already "jam") skip
+  // straight to their role UI — personalization is an upgrade, never a gate.
+  if (st.phase === "lobby") renderLobby(); else render();
+});
+bus.on("state", (m) => {
+  const wasLobby = st?.phase === "lobby";
+  st = m.state; roster = m.roster || roster;
+  if (wasLobby && st.phase === "jam" && me) { closeAvPick(); render(); return; }  // host started → flip to role UI
+  if (st.phase === "lobby") refreshLobby(); else refresh();
+});
+bus.on("roster", (m) => { roster = m.roster || roster; st?.phase === "lobby" ? refreshLobby() : refreshSquares(); });
 bus.on("beat", (m) => onBeat(m));
 
 // ===================================================== chord theory (local — keeps shared.js untouched)
@@ -53,6 +67,120 @@ function onBeat(m) {
   if (me?.role === "lead") leadStep = (leadStep + 1) % 16;
   if (me?.role === "harmony") { hBeat = m.bar * 4 + m.beat; harmonyTick(); }
 }
+
+// ===================================================== LOBBY (pre-jam onboarding)
+// Avatars are images (assets/pfps) held EXCLUSIVELY: the server hands each player a
+// random free one on join; the pen opens a picker where taken ones are dimmed. The
+// server is the source of truth — we claim optimistically and the roster echo
+// confirms (or reverts, if someone else grabbed it first).
+const AVATARS = ["pickle","duck","frog","dog","cat","rocker","alien","cow","pig","rasta","cantor","baba"];
+const avImg = (a) => a ? `<img src="/assets/pfps/${a}.png" alt="${a}" draggable="false">` : "";
+let myName = "", myAvatar = "", amReady = false;
+let profileTimer = null;
+function sendProfile() {
+  clearTimeout(profileTimer);
+  profileTimer = setTimeout(() => bus.control("profile", { name: myName }), 250);
+}
+function syncMyAvatar() {           // server roster = truth (handles rejected claims + reassigns)
+  const mine = roster.find((r) => r.id === me?.id);
+  if (mine) myAvatar = mine.avatar || "";
+}
+function renderLobby() {
+  myName ||= `PLAYER ${me.id}`;
+  syncMyAvatar();
+  screen.innerHTML = topbar(me.role.toUpperCase()) + `
+    <div class="lobby">
+      <div class="lb-lbl caps">your name</div>
+      <input id="lbname" class="lb-input" maxlength="24" autocomplete="off" />
+      <div class="lb-lbl caps">your avatar</div>
+      <div class="lb-me">
+        <div class="lb-avbig" id="lbavbig">${avImg(myAvatar)}</div>
+        <button class="lb-pen" id="lbpen" aria-label="edit avatar">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+            stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17 3l4 4L8 20l-5 1 1-5L17 3z"/><path d="M14.5 5.5l4 4"/>
+          </svg>
+        </button>
+      </div>
+      <div class="lb-lbl caps">what are you into?</div>
+      <textarea id="lbtaste" class="lb-taste" maxlength="200" rows="2"
+        placeholder="a genre, a vibe, a feeling — or leave blank and ride the blend"></textarea>
+      <button id="lbready" class="lb-ready caps">I'M READY</button>
+      <div class="lb-lbl caps">in the lobby · <span id="lbcount"></span></div>
+      <div class="lb-roster" id="lbroster"></div>
+    </div>`;
+  const nameEl = document.getElementById("lbname");
+  nameEl.value = myName;
+  nameEl.addEventListener("input", () => { myName = nameEl.value; sendProfile(); });
+  document.getElementById("lbpen").addEventListener("click", openAvPick);
+  document.getElementById("lbready").addEventListener("click", () => {
+    amReady = !amReady;
+    bus.control("ready", { ready: amReady, taste: document.getElementById("lbtaste").value });
+    paintReady();
+  });
+  sendProfile();           // claim the default name immediately
+  paintReady();
+  refreshLobby();
+}
+function paintReady() {
+  const b = document.getElementById("lbready"); if (!b) return;
+  b.classList.toggle("on", amReady);
+  b.textContent = amReady ? "✓ READY — TAP TO EDIT" : "I'M READY";
+}
+function refreshLobby() {
+  syncMyAvatar();
+  const big = document.getElementById("lbavbig");
+  if (big) big.innerHTML = avImg(myAvatar);
+  paintAvPick();                       // live-dim freshly taken avatars if the picker is open
+  const list = document.getElementById("lbroster"); if (!list) return;
+  const players = roster.filter((r) => r.role !== "groove");
+  const ready = players.filter((p) => p.ready).length;
+  setText("lbcount", `${ready}/${players.length} ready`);
+  list.innerHTML = players.map((p) => `
+    <div class="lb-row${p.ready ? " rdy" : ""}">
+      <span class="av">${avImg(p.avatar) || "·"}</span>
+      <span class="nm-col">
+        <span class="nm">${esc(p.name || "PLAYER " + p.id)}</span>
+        ${p.taste ? `<span class="sub">“${esc(p.taste)}”</span>` : ""}
+      </span>
+      <span class="role mono" style="color:${p.color}">${p.role}</span>
+      <span class="ck">${p.ready ? "✓" : "…"}</span>
+    </div>`).join("");
+}
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`); }
+
+// avatar picker — neobrutalist bottom sheet; taken avatars dimmed + unclickable
+function openAvPick() {
+  if (document.getElementById("avpick")) return;
+  const ov = document.createElement("div"); ov.className = "avpick"; ov.id = "avpick";
+  ov.innerHTML = `<div class="sheet">
+    <h3 class="caps">Pick your avatar</h3>
+    <div class="grid" id="avgrid">
+      ${AVATARS.map((a) => `<button class="opt" data-a="${a}">${avImg(a)}</button>`).join("")}
+    </div>
+    <div class="hint" style="padding:10px 0 0">grayed out = taken by another player</div>
+  </div>`;
+  document.body.appendChild(ov);
+  ov.addEventListener("pointerdown", (e) => { if (e.target === ov) closeAvPick(); });
+  ov.querySelectorAll(".opt").forEach((b) => b.addEventListener("click", () => {
+    if (b.classList.contains("taken")) return;
+    myAvatar = b.dataset.a;                            // optimistic; roster echo confirms/reverts
+    bus.control("profile", { avatar: b.dataset.a });
+    const big = document.getElementById("lbavbig");
+    if (big) big.innerHTML = avImg(myAvatar);
+    closeAvPick();
+  }));
+  paintAvPick();
+}
+function paintAvPick() {
+  const grid = document.getElementById("avgrid"); if (!grid) return;
+  const taken = new Set(roster.filter((r) => r.id !== me?.id && r.avatar).map((r) => r.avatar));
+  grid.querySelectorAll(".opt").forEach((b) => {
+    b.classList.toggle("taken", taken.has(b.dataset.a));
+    b.classList.toggle("sel", b.dataset.a === myAvatar);
+  });
+}
+function closeAvPick() { document.getElementById("avpick")?.remove(); }
 
 // ===================================================== router
 function render() {

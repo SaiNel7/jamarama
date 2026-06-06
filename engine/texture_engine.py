@@ -110,7 +110,11 @@ def main():
     # A fixed textural anchor blended into EVERY style embedding so the bed stays
     # atmospheric (no percussion) even if a user's taste is a beat-heavy genre. MRT2 is
     # texture only — drums come from the deterministic engine (spec §6 invariant).
-    ANCHOR_PROMPT = "ambient sustained synth pads, atmospheric drone, shimmering reverb wash"
+    # Positive descriptors only — MusicCoCa is a contrastive embedder, so "no drums"
+    # can embed NEAR drums; "beatless / free time" describe what TO hear instead.
+    # A/B-tested offline via engine/sweep_prompts.py.
+    ANCHOR_PROMPT = ("ambient sustained synth pads, atmospheric drone, shimmering "
+                     "reverb wash, beatless, free time, textural ambience")
     ANCHOR_WEIGHT = 0.4
     _emb_cache = {}
     _anchor = mrt.embed_style(ANCHOR_PROMPT)

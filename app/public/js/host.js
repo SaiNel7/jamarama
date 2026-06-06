@@ -16,10 +16,24 @@ bus.on("beat", () => {}); // host generates its own beat locally
 bus.on("control", (m) => { if (m.action === "note") onLeadNote(m.payload); });
 
 // ---- join info ----
-fetch("/info").then((r) => r.json()).then((info) => {
-  document.getElementById("qr").src = info.qr;
-  document.getElementById("joinurl").textContent = info.joinUrl;
-});
+// While the server's cloudflared tunnel is coming up, show a "creating link…"
+// state — never flash the LAN address. The final URL (tunnel, or LAN only if the
+// tunnel can't start) is the first thing ever displayed.
+async function refreshInfo() {
+  try {
+    const info = await (await fetch("/info")).json();
+    if (info.pending) {
+      document.getElementById("joinurl").textContent = "creating join link…";
+      document.getElementById("qr").style.visibility = "hidden";   // no broken-img flash, no LAN QR
+      setTimeout(refreshInfo, 1200);
+      return;
+    }
+    document.getElementById("qr").src = info.qr;
+    document.getElementById("qr").style.visibility = "visible";
+    document.getElementById("joinurl").textContent = info.joinUrl;
+  } catch { setTimeout(refreshInfo, 1200); }
+}
+refreshInfo();
 
 // =================================================================== AUDIO ENGINE
 // Synths are created lazily inside startAudio (after the user gesture / Tone.start),
@@ -40,13 +54,21 @@ function initSynths() {
 }
 
 let started = false;
+let lobbyReady = false;           // all players ready (or no players) — updated by paintRoster
 async function startAudio() {
   if (started) return;            // ignore double-taps (would double-schedule the clock)
+  if (!lobbyReady) {              // HARD GATE: can't start until the whole lobby is ready
+    const b = document.getElementById("start");
+    b.classList.remove("shake"); void b.offsetWidth;  // restart the animation
+    b.classList.add("shake");
+    return;
+  }
   started = true;
   // Show the console FIRST — audio init must never hold the screen hostage. A contended
   // output device (e.g. the MRT2 texture engine holding the default sink) can make
   // Tone.start()'s AudioContext.resume() hang forever; we don't want a frozen lobby.
   showConsole();
+  bus.send({ type: "host", action: "start" });  // lobby → jam: phones flip to role UIs, taste blend finalizes
   try {
     await withTimeout(Tone.start(), 4000);   // resume the AudioContext (bounded)
     initSynths();
@@ -128,13 +150,20 @@ function paintInfo() {
   for (const id of ["lb-room", "room"]) setText(id, st.room);
   for (const id of ["lb-key", "key"]) setText(id, st.key + " MAJ");
   for (const id of ["lb-tempo", "tempo"]) setText(id, st.tempo);
+  setText("taste", (st.taste || []).join("  +  ") || "—");
 }
 function paintRoster() {
   const phones = roster.filter((r) => r.role !== "groove");
   const lb = document.getElementById("lb-roster");
-  if (lb) lb.innerHTML = roster.length
-    ? roster.map((r) => chip(r.role, "#" + r.id)).join("")
+  if (lb) lb.innerHTML = phones.length
+    ? phones.map((r) => chip(r)).join("")
     : `<span class="mono" style="color:#5a564d">waiting for players…</span>`;
+  // ready indicator (never a gate — START stays live, just turns green when everyone's set)
+  const ready = phones.filter((p) => p.ready).length;
+  setText("lb-ready", `${ready}/${phones.length} ready`);
+  // full yellow + unlocked when the lobby is set (or nobody to wait for); translucent + gated while readying
+  lobbyReady = phones.length === 0 || ready === phones.length;
+  document.getElementById("start")?.classList.toggle("allready", lobbyReady);
   // heartbeat squares = up to 4 phone players
   const sq = document.getElementById("squares");
   if (sq) sq.innerHTML = [0, 1, 2, 3].map((i) =>
@@ -145,9 +174,15 @@ function paintRoster() {
   if (dots) dots.innerHTML = ROLE_ORDER.map((role) =>
     `<div class="rdot" style="background:${present.has(role) ? ROLE_COLOR[role] : "var(--gray)"}">${ROLE_LETTER[role]}</div>`).join("");
 }
-function chip(role, tag) {
-  return `<span class="mono caps" style="background:${ROLE_COLOR[role]};color:#fff;border:var(--border);box-shadow:var(--shadow-sm);border-radius:999px;padding:8px 16px;font-size:14px">${role} ${tag}</span>`;
+function chip(r) {
+  const name = esc(r.name || "#" + r.id);
+  const sub = r.taste ? `<span class="sub">“${esc(r.taste)}”</span>` : "";
+  // r.avatar is a server-validated slug from the pfp pool (assets/pfps/<slug>.png)
+  const av = r.avatar ? `<img class="chip-av" src="/assets/pfps/${r.avatar}.png" alt="">` : "";
+  return `<span class="lb-chip${r.ready ? " rdy" : ""}" style="background:${ROLE_COLOR[r.role]}">` +
+    `<span class="mono caps top">${av}${name} <i>${r.role}</i> ${r.ready ? "✓" : "…"}</span>${sub}</span>`;
 }
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`); }
 
 // =================================================================== CONSOLE BUILD
 const ROWS = [ // top → bottom (matches reference)

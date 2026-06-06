@@ -5,6 +5,9 @@ __pycache__/
 
 # model weights live in ~/Documents/Magenta, not the repo
 
+# generated A/B sweep audio (engine/sweep_prompts.py, prototype/sweep_texture.py)
+tex_*.wav
+
 # misc
 .DS_Store
 *.log

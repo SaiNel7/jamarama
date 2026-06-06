@@ -12,7 +12,11 @@ npm start          # → http://localhost:3000
 ```
 - **Host screen:** open `http://localhost:3000` on the room computer, click **START THE JAM**
   (a user gesture is required to enable audio). A kick/hat groove starts and a QR appears.
-- **Phones:** on the **same WiFi**, scan the QR (or open the printed `http://<LAN-IP>:3000/join`).
+- **Phones:** scan the QR. A **cloudflared quick tunnel starts automatically** and the QR flips
+  to its `https://….trycloudflare.com` URL a few seconds after boot — so phones join from ANY
+  network (eduroam, cellular). Needs `brew install cloudflared` once; without it (or offline)
+  the QR stays on the LAN URL (`http://<LAN-IP>:3000/join`, same-WiFi only). `NO_TUNNEL=1`
+  forces LAN-only; `PUBLIC_URL=…` pins an explicit URL and skips the auto-tunnel.
   Roles are auto-assigned in order: **1st → Harmony, 2nd → Lead, everyone else → Crowd.**
   (Host = Groove/Drums.)
 
@@ -43,6 +47,25 @@ loose MRT2 texture; the OS mixer sums both out one speaker. MRT2 is off-grid by 
 needs to share the speaker, not the clock (MASTER_SPEC_V3 §8–9). MRT2 confirmed real-time on this
 Mac (`mrt2_small`, ~2.37× RTF).
 
+## Pre-jam lobby + taste prompts
+
+Phones that join before the host starts land in a **lobby**: name, emoji avatar, an optional
+"what are you into?" prompt, and a READY toggle. The host lobby shows `n/m ready`; START is
+translucent and **gated until every player is ready** (Kahoot-style — a deliberate deviation
+from the spec's "never a gate" invariant; gate is client-side in `startAudio()`, trivially
+removable). On START, all prompts are blended into `state.taste`
+(the MRT2 style conditioning); blank prompts just ride the blend. Late joiners skip the lobby.
+
+Prompt ingestion (`taste.js`) has two A/B-testable modes:
+```bash
+npm start                                          # TASTE_MODE=append (default, offline-safe):
+                                                   #   "<prompt>, rendered as beatless ambient texture, …"
+TASTE_MODE=llm ANTHROPIC_API_KEY=sk-… npm start    # claude-haiku-4-5 rewrites each prompt into
+                                                   #   style descriptors; falls back to append on any failure
+node taste.js "punk" "like rain on a sunday"       # print both transforms side by side
+../.venv/bin/python ../engine/sweep_prompts.py     # render A/B WAVs (raw vs append vs anchor phrasings)
+```
+
 ## Architecture
 ```
 phones (browser, control-only) ──WS──► Node server (relay + room state) ◄──WS── host browser
@@ -57,6 +80,7 @@ phones (browser, control-only) ──WS──► Node server (relay + room state
 - `public/host.html` + `js/host.js` — master clock, audible groove, room view.
 - `public/join.html` + `js/controllers.js` — phone controllers (per role).
 - `public/js/shared.js` — WS `Bus` + protocol + diatonic-chord helpers.
+- `taste.js` — taste prompt ingestion (append / LLM rewrite) → `state.taste`.
 - `public/css/theme.css` — neo-brutalist design tokens (see `../DESIGN.md`).
 
 ## Next (per spec §12)
