@@ -8,9 +8,9 @@ import { networkInterfaces } from "os";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { spawn } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import QRCode from "qrcode";
-import { transformPrompts } from "./taste.js";
+import { transformPrompts, voicePrompts } from "./taste.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -49,6 +49,7 @@ const state = {
   chord: "I",                       // current harmony degree (roman numeral)
   progression: ["I", "IV", "V", "vi"],
   progressionChords: [],            // [{label, notes:[midi]}] — voicing for swapped/non-diatonic chords
+  palette: [],                      // harmony wheel nodes [{roman, display}] — host mirrors the wheel
   schedule: [],                     // 16 beat-slots: chord on each beat of the fixed 4-bar loop
   taste: ["warm ambient pads", "cinematic texture"], // blended taste → MRT2 style embedding
   energy: 0.0,                      // crowd collective energy 0..1
@@ -128,6 +129,55 @@ app.get("/info", async (_req, res) => {
              qr: await QRCode.toDataURL(ju, { margin: 1, width: 320 }) });
 });
 
+// Pre-bake the host's two voices (harmony + lead) from a taste prompt → Tone.Sampler one-shots
+// under public/voices/ (served statically). Offline MRT2 render (engine/prebake_voices.py), ~7s.
+// Triggered automatically on jam start with prompts derived from the players' raw taste
+// prompts (voicePrompts in taste.js); the host is told via a `voices` broadcast and swaps
+// its synths for the baked samplers. GET /prebake remains for manual testing/re-bakes.
+let prebaking = false;
+function runPrebake(harmony, lead) {
+  return new Promise((resolve, reject) => {
+    if (prebaking) return reject(new Error("prebake already running"));
+    const py = join(__dirname, "../.venv/bin/python");
+    const script = join(__dirname, "../engine/prebake_voices.py");
+    if (!existsSync(py) || !existsSync(script)) return reject(new Error("prebake engine not found"));
+    prebaking = true;
+    console.log(`  [prebake] harmony="${harmony}" lead="${lead}" …`);
+    const child = spawn(py, [script, "--harmony", harmony, "--lead", lead, "--out", join(__dirname, "public/voices")],
+      { cwd: join(__dirname, "../engine") });
+    let err = "";
+    child.stderr.on("data", (d) => { err += d.toString(); });
+    child.on("error", (e) => { prebaking = false; reject(e); });
+    child.on("exit", (code) => {
+      prebaking = false;
+      if (code !== 0) return reject(new Error(`prebake failed (code ${code}): ${err.slice(-400)}`));
+      try { resolve(JSON.parse(readFileSync(join(__dirname, "public/voices/manifest.json"), "utf8"))); }
+      catch { reject(new Error("manifest read failed")); }
+      console.log("  [prebake] done");
+    });
+  });
+}
+app.get("/prebake", (req, res) => {
+  const harmony = String(req.query.harmony || "warm analog synth pad, mellow").slice(0, 200);
+  const lead = String(req.query.lead || "bright expressive lead synth").slice(0, 200);
+  runPrebake(harmony, lead)
+    .then((manifest) => res.json(manifest))
+    .catch((e) => res.status(e.message.includes("already running") ? 409 : 500).json({ error: e.message }));
+});
+
+// Jam start → bake the harmony/lead voices from everyone's raw taste prompts, then tell
+// the host to swap them in ("default voice instant, personalized swaps in" — spec §invariants).
+async function prebakeFromTastes() {
+  const { harmony, lead } = voicePrompts(playerTastes());
+  try {
+    const manifest = await runPrebake(harmony, lead);
+    broadcast({ type: "voices", manifest });
+    console.log("  [prebake] taste voices ready — host notified");
+  } catch (e) {
+    console.log(`  [prebake] skipped (${e.message}) — host keeps the built-in synths`);
+  }
+}
+
 const server = createServer(app);
 
 // --- WebSocket ---
@@ -180,6 +230,7 @@ wss.on("connection", (ws) => {
           const players = roster().filter((p) => p.role !== "groove");
           console.log(`  [lobby] host started the jam (${players.filter((p) => p.ready).length}/${players.length} players ready)`);
           recomputeTaste();                                        // async; broadcasts again when transforms land
+          prebakeFromTastes();                                     // async; `voices` broadcast when the bake lands
         }
         broadcastState();
         break;
@@ -214,6 +265,9 @@ function applyControl(msg, id) {
       // Host plays state.schedule[(bar*4+beat) % 16] each beat for sub-bar chord durations.
       if (payload.schedule) state.schedule = payload.schedule;
       break;
+    case "palette":        // harmony wheel nodes [{roman, display}] → host mirrors the wheel
+      state.palette = payload.nodes;
+      break;
     case "mood": {         // crowd: a mood tap
       if (state.mood[payload.mood] != null) state.mood[payload.mood]++;
       state.recentMoods.unshift({ mood: payload.mood, id });
@@ -242,6 +296,14 @@ function applyControl(msg, id) {
   }
 }
 
+// Every player's raw (untransformed) taste prompt — feeds both the texture blend
+// (transformed) and the one-shot voice prebake (raw, keeps genre identity).
+function playerTastes() {
+  return [...clients.values()]
+    .filter((c) => c.role !== "texture" && c.role !== "groove" && c.taste)
+    .map((c) => c.taste);
+}
+
 // Blend every player's taste prompt into state.taste (the MRT2 style conditioning).
 // Transforms run through app/taste.js (TASTE_MODE=append|llm); falls back to the
 // default bed when nobody wrote anything. Guarded against out-of-order async
@@ -249,9 +311,7 @@ function applyControl(msg, id) {
 const DEFAULT_TASTE = [...state.taste];
 let tasteGen = 0;
 async function recomputeTaste() {
-  const prompts = [...clients.values()]
-    .filter((c) => c.role !== "texture" && c.role !== "groove" && c.taste)
-    .map((c) => c.taste);
+  const prompts = playerTastes();
   const gen = ++tasteGen;
   const next = prompts.length ? await transformPrompts(prompts) : DEFAULT_TASTE;
   if (gen !== tasteGen) return; // a newer recompute superseded this one

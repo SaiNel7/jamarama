@@ -20,7 +20,25 @@
 #lobby::after { content:""; position:absolute; left:0; right:0; bottom:-48px; height:min(48vh, 460px);
   background:url("/assets/bgd_overlay.png") bottom center / contain no-repeat; pointer-events:none; }
 .lobby-wrap { display:grid; grid-template-columns:1fr 380px; gap:48px; max-width:1100px; width:100%;
-  align-items:center; position:relative; z-index:1; }
+  align-items:center; position:relative; z-index:2; }
+
+/* ---------- lobby sprite layer (game-feel doodles) ----------
+   z-order: lineup (::after, z-auto) < sprites (z1) < content (.lobby-wrap, z2) —
+   sprites float over the page but slip UNDER the cards/buttons where they intersect. */
+#sprites { position:absolute; inset:0; z-index:1; pointer-events:none; }
+#sprites img { position:absolute; user-select:none; }
+.spr-bob { animation:sprBob 3.4s ease-in-out infinite; }
+@keyframes sprBob { 50% { transform:translateY(-14px) rotate(5deg); } }
+.spr-twinkle { animation:sprTwinkle 2.6s ease-in-out infinite; }
+@keyframes sprTwinkle { 50% { transform:scale(.72) rotate(18deg); opacity:.55; } }
+/* out-and-back from the rendered spot — never jumps, regardless of delay/direction */
+.spr-drift { animation:sprDrift 30s ease-in-out infinite; }
+@keyframes sprDrift { 50% { transform:translateX(7vw); } }
+.spr-sway { animation:sprSway 4.5s ease-in-out infinite; }
+@keyframes sprSway { 50% { transform:rotate(-7deg); } }
+/* rocket + shooting stars stay put — just a light hover along their flight direction */
+.spr-hover { animation:sprHover 3.8s ease-in-out infinite; }
+@keyframes sprHover { 50% { transform:translate(7px,-11px); } }
 .lobby-tag { font-size:16px; color:#5a564d; margin:10px 0 28px; }
 .lobby-room { display:flex; gap:14px; margin-bottom:28px; }
 .lb-roster { display:flex; flex-wrap:wrap; gap:10px; margin:12px 0 28px; min-height:44px; }
@@ -121,6 +139,10 @@
 .lk.on { background:var(--lead); }
 .motif { height:70px; border:var(--border); border-radius:10px; background:var(--cream); position:relative; overflow:hidden; }
 .motif .mn { position:absolute; height:8px; border-radius:4px; background:var(--lead); border:1.5px solid var(--ink); }
+/* lead loop lane: recorded/generated notes as bars + a sweeping playhead */
+.leadloop { position:relative; height:84px; border:var(--thick); border-radius:12px; background:var(--cream); overflow:hidden; box-shadow:var(--shadow-sm); margin-bottom:8px; }
+.leadloop .lln { position:absolute; height:8px; border-radius:5px; background:var(--lead); border:1.5px solid var(--ink); transform:translateY(-50%); }
+.leadloop .llph { position:absolute; top:0; bottom:0; width:3px; background:var(--ink); left:0; opacity:.85; transition:left .05s linear; }
 .lbl { font-size:12px; color:#5a564d; }
 
 /* crowd mix faders */

@@ -1,7 +1,7 @@
 // HarmonyBrain — rhythm-focused comping over the chord schedule. Same rhythmic engine
 // as the lead, but pitches are FIXED to the current chord (no melodic inversion). It
 // decides WHEN to articulate the chord and whether to block/arpeggiate. Rhythm only.
-import { rng, STEPS_PER_BAR } from "./theory.js";
+import { rng, STEPS_PER_BAR, STEPS_PER_BEAT } from "./theory.js";
 
 export const HARMONY_DEFAULTS = {
   density: 0.4,     // 0 sustained → 0.2 beats → 0.45 eighths → 0.7+ sixteenths
@@ -15,7 +15,8 @@ export class HarmonyBrain {
   // schedule: beat-slots [{notes:[midi]}], length = bars*4. Returns comp notes {t,p,d,v}.
   comp(schedule, params = {}, loop = 0) {
     const p = { ...HARMONY_DEFAULTS, ...params };
-    const len = this.len, beats = schedule.length || this.bars * 4;
+    const beats = schedule.length || this.bars * 4;     // loop length is driven by the schedule
+    const len = beats * STEPS_PER_BEAT;                 // (supports any loop length, not just 4 bars)
     const r = rng(loop * 40503 + 7);
     const out = [];
 

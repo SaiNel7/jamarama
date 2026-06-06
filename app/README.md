@@ -56,6 +56,13 @@ from the spec's "never a gate" invariant; gate is client-side in `startAudio()`,
 removable). On START, all prompts are blended into `state.taste`
 (the MRT2 style conditioning); blank prompts just ride the blend. Late joiners skip the lobby.
 
+Player prompts shape **two** Magenta layers on jam start:
+1. **Texture bed** — transformed prompts (`state.taste`) condition the live MRT2 atmosphere.
+2. **Instrument voices** — raw prompts (genre identity intact) drive an MRT2 one-shot prebake
+   (`prebakeFromTastes()` → `engine/prebake_voices.py`, ~7s); the host gets a `voices`
+   broadcast and swaps its harmony/lead synths for the baked Tone.Samplers. Jam starts on
+   the built-in synths, personalized voices swap in — never a wait.
+
 Prompt ingestion (`taste.js`) has two A/B-testable modes:
 ```bash
 npm start                                          # TASTE_MODE=append (default, offline-safe):

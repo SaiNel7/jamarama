@@ -21,7 +21,7 @@ bus.on("state", (m) => {
   if (wasLobby && st.phase === "jam" && me) { closeAvPick(); render(); return; }  // host started → flip to role UI
   if (st.phase === "lobby") refreshLobby(); else refresh();
 });
-bus.on("roster", (m) => { roster = m.roster || roster; st?.phase === "lobby" ? refreshLobby() : refreshSquares(); });
+bus.on("roster", (m) => { roster = m.roster || roster; if (st?.phase === "lobby") refreshLobby(); });
 bus.on("beat", (m) => onBeat(m));
 
 // ===================================================== chord theory (local — keeps shared.js untouched)
@@ -44,28 +44,15 @@ function diatonicSlot(key, deg) {
 }
 
 // ===================================================== shared chrome
-function topbar(label) {
-  return `
-  <div class="statusbar"><span class="mono">9:41</span><span class="brand mono">JAM·LAN 🔋</span></div>
-  <div style="display:flex;align-items:center;gap:10px">
-    <div class="toppill" style="flex:1">
-      <div class="chip"></div><div class="name caps">${label}</div>
-      <div class="live"><span class="dot" id="livedot"></span><span class="mono">LIVE</span></div>
-    </div>
-    <div class="players" id="players" style="margin:14px 18px 0 0"></div>
-  </div>`;
-}
-function refreshSquares() {
-  const el = document.getElementById("players"); if (!el) return;
-  const order = ["harmony", "lead", "crowd", "crowd"];
-  const present = roster.filter((r) => r.role !== "groove");
-  const COL = { harmony:"#1BA88A", lead:"#F4533A", crowd:"#9B7BE6" };
-  el.innerHTML = [0,1,2,3].map((i) => `<div class="sq" style="${present[i] ? "background:" + COL[present[i].role] : ""}"></div>`).join("");
+// Slim header only — no fake status bar, no player squares (removed per design).
+function slimHeader(label) {
+  return `<div class="ph-top"><div class="chip"></div><div class="role caps">${label}</div>
+    <span class="live"><span class="dot" id="livedot"></span></span></div>`;
 }
 function onBeat(m) {
   document.querySelectorAll("#livedot,.banner .dot").forEach((d) => { d.classList.add("pulse"); setTimeout(() => d.classList.remove("pulse"), 110); });
   if (me?.role === "lead") leadStep = (leadStep + 1) % 16;
-  if (me?.role === "harmony") { hBeat = m.bar * 4 + m.beat; harmonyTick(); }
+  if (me?.role === "harmony") harmonyOnBeat(m);   // soft phase-lock; rAF animates the playhead
 }
 
 // ===================================================== LOBBY (pre-jam onboarding)
@@ -88,7 +75,7 @@ function syncMyAvatar() {           // server roster = truth (handles rejected c
 function renderLobby() {
   myName ||= `PLAYER ${me.id}`;
   syncMyAvatar();
-  screen.innerHTML = topbar(me.role.toUpperCase()) + `
+  screen.innerHTML = slimHeader(me.role.toUpperCase()) + `
     <div class="lobby">
       <div class="lb-lbl caps">your name</div>
       <input id="lbname" class="lb-input" maxlength="24" autocomplete="off" />
@@ -187,12 +174,10 @@ function render() {
   if (me.role === "crowd") renderCrowd();
   else if (me.role === "harmony") renderHarmony();
   else if (me.role === "lead") renderLead();
-  refreshSquares();
 }
 function refresh() {
   if (me?.role === "crowd") refreshCrowd();
   else if (me?.role === "harmony") refreshHarmony();
-  refreshSquares();
 }
 
 // ===================================================== CROWD
@@ -203,7 +188,7 @@ const MOODS = [
   { k:"dreamier", label:"DREAMIER", ic:"☁️", bg:"var(--dreamier)", fg:"#16120D" },
 ];
 function renderCrowd() {
-  screen.innerHTML = topbar("CROWD") + `
+  screen.innerHTML = slimHeader("CROWD") + `
     <div class="moodgrid">
       ${MOODS.map((m) => `<button class="mood caps" data-mood="${m.k}" style="background:${m.bg};color:${m.fg}">
         <span class="ic">${m.ic}</span>${m.label}</button>`).join("")}
@@ -237,208 +222,332 @@ function refreshCrowd() {
 }
 
 // ===================================================== HARMONY
-let slots = [];      // 6 wheel nodes: [0]=I center, [1..5]=ii,iii,IV,V,vi around
-let drawn = [];      // the loop: array of chord objects {root,quality,roman,display,beats}
-let hBeat = 0;       // current global beat (from host), for the timeline playhead
+// Wheel = a chord palette + a DRAW surface: drag your finger across chords to draw the
+// loop (each drag clears + recreates). I is centered; the rest + a "+" node ring around.
+// Tap a timeline block to swap the chord / set its length / remove.
+let palette = [];    // chord options: [0]=I (center), [1..]=ring; user can add via "+"
+let nodeEls = [];    // {i, el, cx, cy, isAdd}
+let drawn = [];      // the loop: [{root,quality,roman,display,beats,pinned,pi}]
+let hBeat = 0;
+let drawing = false, lastDrawNode = -1;
+const LEN_OPTS = [1, 2, 4, 8, 16];                 // ¼ · ½ · 1 · 2 · 4 bars (in quarter-beats)
+const loopBeats = () => drawn.reduce((a, c) => a + c.beats, 0) || 1;
+
+function initPalette() {
+  if (palette.length) return;
+  palette = [0, 1, 2, 3, 4, 5].map((d) => { const s = diatonicSlot(st.key, d); return { ...s, display: chordLabel(s.root, s.quality) }; });
+}
 function renderHarmony() {
-  slots = [0,1,2,3,4,5].map((d) => { const s = diatonicSlot(st.key, d); return { ...s, display: chordLabel(s.root, s.quality) }; });
-  screen.innerHTML = topbar("HARMONY") + `
-    <div class="h-keyline"><span class="mono" style="font-size:13px;color:#5a564d">KEY · ${st.key} MAJ</span></div>
-    <div class="hwheel" id="wheel"><svg class="wlines" id="wlines" viewBox="0 0 100 100" preserveAspectRatio="none"></svg></div>
+  initPalette();
+  screen.innerHTML = `
+    <div class="h-key"><span class="mono">KEY · ${st.key} MAJ</span></div>
+    <div class="hwheel" id="wheel"><svg class="wlines" id="wlines" viewBox="0 0 100 100" preserveAspectRatio="none">
+      <line id="draghint" stroke="#5FD0A8" stroke-width="2" stroke-dasharray="3 3" stroke-linecap="round"/></svg></div>
     <div class="htl">
-      <div class="htl-head"><span class="lbl">LOOP · 4 BARS</span><span class="now" id="nowchord">—</span></div>
-      <div class="htl-strip" id="timeline">
-        <div class="htl-grid" style="left:25%"></div><div class="htl-grid" style="left:50%"></div><div class="htl-grid" style="left:75%"></div>
-        <div class="htl-ph" id="tlph"></div>
-      </div>
+      <div class="htl-head"><span class="lbl" id="loophead">LOOP</span><span class="now" id="nowchord">—</span></div>
+      <div class="htl-strip" id="timeline"><div class="htl-ph" id="tlph"></div></div>
     </div>
     <div class="h-bottom">
-      <span class="hint" style="padding:0;flex:1">tap wheel to add · tap a block to swap / remove</span>
-      <button id="clear" class="btn caps" style="padding:12px 20px">CLEAR</button>
+      <span class="hint" style="padding:0;flex:1">drag across chords to draw your loop · tap a block to edit · + adds a chord</span>
+      <button id="clear" class="btn caps" style="padding:12px 18px">CLEAR</button>
     </div>`;
-  buildWheelNodes();
+  buildWheel();
+  bindWheelDrag();
+  sendPalette();                                   // host wheel mirrors the phone (I centered)
   document.getElementById("clear").addEventListener("click", () => { drawn = []; sendProg(); refreshHarmony(); });
-  document.getElementById("timeline").addEventListener("click", (e) => {   // tap a chord block to swap/remove it
+  document.getElementById("timeline").addEventListener("click", (e) => {
     const b = e.target.closest(".htl-block"); if (!b) return;
     const idx = [...document.querySelectorAll(".htl-block")].indexOf(b);
-    if (idx >= 0) openSwap(idx);
+    if (idx >= 0) openPicker(idx);
   });
   refreshHarmony();
 }
-function buildWheelNodes() {
+function buildWheel() {
   const W = document.getElementById("wheel");
-  W.querySelectorAll(".hnode").forEach((n) => n.remove());
-  const place = (i, x, y, center) => {
-    const s = slots[i];
-    const n = document.createElement("button");
-    n.className = "hnode" + (center ? " center" : ""); n.dataset.i = i;
-    n.style.left = x + "%"; n.style.top = y + "%";
-    n.style.width = (center ? 92 : 78) + "px"; n.style.height = (center ? 92 : 78) + "px";
-    n.innerHTML = `<span class="r">${s.roman ?? ""}</span><span class="n">${s.display}</span>`;
-    bindNode(n, i);
-    W.appendChild(n);
-  };
-  place(0, 50, 46, true);                                  // I in the middle
-  for (let k = 0; k < 5; k++) {                             // ii,iii,IV,V,vi around it
-    const a = (-90 + k * 72) * Math.PI / 180;
-    place(k + 1, 50 + 37 * Math.cos(a), 46 + 37 * Math.sin(a), false);
+  W.querySelectorAll(".hnode,.haddnode").forEach((n) => n.remove());
+  nodeEls = [];
+  const ringChords = palette.length - 1, total = ringChords + 1;  // ring = other chords + "+"
+  const size = total <= 6 ? 74 : total <= 9 ? 62 : 52;
+  const R = 37;
+  addNodeEl(0, 50, 46, 90, false);                                 // I centered
+  for (let k = 0; k < total; k++) {
+    const a = (-90 + k * 360 / total) * Math.PI / 180;
+    const x = 50 + R * Math.cos(a), y = 46 + R * Math.sin(a);
+    if (k < ringChords) addNodeEl(k + 1, x, y, size, false);
+    else addAddEl(x, y, size);
   }
 }
-function bindNode(n, i) {
-  n.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    n.classList.add("pressed"); setTimeout(() => n.classList.remove("pressed"), 120);
-    addToLoop(i);                                 // wheel = tap to add to the loop
+function addNodeEl(i, x, y, sizePx, _c) {
+  const s = palette[i], n = document.createElement("div");
+  n.className = "hnode" + (i === 0 ? " center" : ""); n.dataset.i = i;
+  n.style.cssText = `left:${x}%;top:${y}%;width:${sizePx}px;height:${sizePx}px`;
+  n.innerHTML = `<span class="r">${s.roman ?? ""}</span><span class="n">${s.display}</span>`;
+  document.getElementById("wheel").appendChild(n);
+  nodeEls.push({ i, el: n, cx: x, cy: y, isAdd: false });
+}
+function addAddEl(x, y, sizePx) {
+  const n = document.createElement("div");
+  n.className = "haddnode"; n.style.cssText = `left:${x}%;top:${y}%;width:${sizePx}px;height:${sizePx}px`;
+  n.textContent = "+";
+  document.getElementById("wheel").appendChild(n);
+  nodeEls.push({ i: -1, el: n, cx: x, cy: y, isAdd: true });
+}
+function nodeAt(x, y) {
+  for (const n of nodeEls) {
+    const r = n.el.getBoundingClientRect();
+    if (Math.hypot(x - (r.left + r.width / 2), y - (r.top + r.height / 2)) < r.width * 0.62) return n;
+  }
+  return null;
+}
+function bindWheelDrag() {
+  const W = document.getElementById("wheel");
+  W.addEventListener("pointerdown", (e) => {
+    const hit = nodeAt(e.clientX, e.clientY);
+    if (hit?.isAdd) { openAdd(); return; }
+    e.preventDefault(); try { W.setPointerCapture(e.pointerId); } catch {}
+    drawing = true; drawn = []; lastDrawNode = -1;
+    if (hit) pushDraw(hit.i);
+    liveDraw(e);
   });
+  W.addEventListener("pointermove", (e) => {
+    if (!drawing) return;
+    const hit = nodeAt(e.clientX, e.clientY);
+    if (hit && !hit.isAdd && hit.i !== lastDrawNode) pushDraw(hit.i);
+    liveDraw(e);
+  });
+  const end = () => { if (!drawing) return; drawing = false; clearDragHint(); fitDurations(); sendProg(); refreshHarmony(); };
+  W.addEventListener("pointerup", end);
+  W.addEventListener("pointercancel", end);
 }
-function addToLoop(i) {
-  if (drawn.length >= 16) return;              // 16 beats = 4 bars at ¼-bar min
-  const s = slots[i];
-  drawn.push({ root: s.root, quality: s.quality, roman: s.roman, display: s.display, beats: 4 });
-  sendProg(); refreshHarmony();
+function pushDraw(i) {
+  const s = palette[i];
+  drawn.push({ root: s.root, quality: s.quality, roman: s.roman, display: s.display, beats: 4, pinned: false, pi: i });
+  lastDrawNode = i;
+  flashNode(i);
+  chordTone(chordMidiNotes(s.root, s.quality, 4));   // local preview — hear the chord you drew
 }
-// The loop is ALWAYS 4 bars (16 beats). Default 1 bar/chord; if they don't fit,
-// halve the longest (1 bar→½→¼) until they do; if there's room, grow the shortest.
+function flashNode(i) { const n = nodeEls.find((e) => e.i === i && !e.isAdd); if (n) { n.el.classList.add("hit"); setTimeout(() => n.el.classList.remove("hit"), 160); } }
+function liveDraw(e) { drawWheelLines(); renderTimeline(); highlightNodes(); if (e) dragHintTo(e.clientX, e.clientY); }
+function dragHintTo(x, y) {
+  const W = document.getElementById("wheel").getBoundingClientRect(), ln = document.getElementById("draghint");
+  const last = drawn.length ? nodeEls.find((n) => n.i === drawn[drawn.length - 1].pi && !n.isAdd) : null;
+  if (!last || !ln) return;
+  ln.setAttribute("x1", last.cx); ln.setAttribute("y1", last.cy);
+  ln.setAttribute("x2", (x - W.left) / W.width * 100); ln.setAttribute("y2", (y - W.top) / W.height * 100);
+}
+function clearDragHint() { const ln = document.getElementById("draghint"); if (ln) { ln.setAttribute("x2", ln.getAttribute("x1") || 0); ln.setAttribute("y2", ln.getAttribute("y1") || 0); } }
+
+// Fresh-draw default: fit the loop to 4 bars (halve longest / grow shortest). Manual
+// length edits in the picker override this and the loop length becomes their sum.
 function fitDurations() {
-  const N = drawn.length; if (!N) return;
-  drawn.forEach((c) => (c.beats = 4));
+  if (!drawn.length) return;
+  drawn.forEach((c) => { c.beats = 4; c.pinned = false; });
   const sum = () => drawn.reduce((a, c) => a + c.beats, 0);
   let g = 0;
-  while (sum() > 16 && g++ < 999) {            // too many → halve the longest
-    let mi = 0; drawn.forEach((c, i) => { if (c.beats > drawn[mi].beats) mi = i; });
-    if (drawn[mi].beats <= 1) break;
-    drawn[mi].beats /= 2;
-  }
+  while (sum() > 16 && g++ < 999) { let mi = 0; drawn.forEach((c, i) => { if (c.beats > drawn[mi].beats) mi = i; }); if (drawn[mi].beats <= 1) break; drawn[mi].beats /= 2; }
   g = 0;
-  while (sum() < 16 && g++ < 999) {            // room left → grow the shortest
-    let mi = 0; drawn.forEach((c, i) => { if (c.beats < drawn[mi].beats) mi = i; });
-    const add = Math.min(drawn[mi].beats, 16 - sum());
-    drawn[mi].beats += add;
-  }
+  while (sum() < 16 && g++ < 999) { let mi = 0; drawn.forEach((c, i) => { if (c.beats < drawn[mi].beats) mi = i; }); drawn[mi].beats += Math.min(drawn[mi].beats, 16 - sum()); }
 }
-function buildSchedule() {                       // 16 beat-slots → chord playing on each beat
+function romanFor(root, quality) {                 // diatonic roman (if any) → keeps host from going silent on edits
+  for (let d = 0; d < 7; d++) { const s = diatonicSlot(st.key, d); if (s.root === root && s.quality === quality) return s.roman; }
+  return undefined;
+}
+function refitProtect(idx) {                        // keep loop EXACTLY 16 beats; protect edited chord, adjust others
+  const total = () => drawn.reduce((a, c) => a + c.beats, 0);
+  let g = 0;
+  while (total() > 16 && g++ < 9999) { let mi = -1; drawn.forEach((c, i) => { if (i !== idx && c.beats > 1 && (mi < 0 || c.beats > drawn[mi].beats)) mi = i; }); if (mi < 0) { if (drawn[idx].beats > 1) drawn[idx].beats--; else break; } else drawn[mi].beats--; }
+  g = 0;
+  while (total() < 16 && g++ < 9999) { let mi = -1; drawn.forEach((c, i) => { if (i !== idx && (mi < 0 || c.beats < drawn[mi].beats)) mi = i; }); if (mi < 0) drawn[idx].beats++; else drawn[mi].beats++; }
+}
+function buildSchedule() {                          // exactly 16 beat-slots (always 4 bars, no gaps)
   const sched = [];
-  drawn.forEach((c) => {
-    const o = { label: c.display, roman: c.roman || c.display, notes: chordMidiNotes(c.root, c.quality, 4), beats: c.beats };
-    for (let b = 0; b < c.beats; b++) sched.push(o);
-  });
-  while (sched.length < 16 && sched.length) sched.push(sched[sched.length - 1]);
+  drawn.forEach((c) => { const o = { label: c.display, roman: c.roman || c.display, notes: chordMidiNotes(c.root, c.quality, 4), beats: c.beats }; for (let b = 0; b < c.beats; b++) sched.push(o); });
+  while (sched.length && sched.length < 16) sched.push(sched[sched.length - 1]);
   return sched.slice(0, 16);
 }
-function currentIdx() {                          // which chord the phone's 4-bar model is on now
+function currentIdx() {
   if (!drawn.length) return -1;
-  let acc = 0, lb = hBeat % 16;
+  let acc = 0, lb = hBeat % loopBeats();
   for (let i = 0; i < drawn.length; i++) { acc += drawn[i].beats; if (lb < acc) return i; }
   return drawn.length - 1;
 }
 function sendProg() {
-  fitDurations();
   bus.control("progression", {
     degrees: drawn.map((d) => d.roman || d.display),
     chords: drawn.map((d) => ({ label: d.display, notes: chordMidiNotes(d.root, d.quality, 4), beats: d.beats })),
     schedule: buildSchedule(),
-    bars: 4,
+    loopBeats: loopBeats(),
   });
+}
+// Mirror the wheel to the host: [0]=I (center), the rest ring around it. Added nodes too.
+function sendPalette() {
+  bus.control("palette", { nodes: palette.map((p) => ({ roman: p.roman || null, display: p.display })) });
 }
 function refreshHarmony() {
   if (me?.role !== "harmony") return;
-  const drawnKeys = new Set(drawn.map((d) => d.display));
-  document.querySelectorAll(".hnode").forEach((n) => {
-    n.classList.toggle("active", drawnKeys.has(slots[n.dataset.i].display));
-  });
-  drawWheelLines();
-  renderTimeline();
-  harmonyTick();
+  highlightNodes(); drawWheelLines(); renderTimeline(); lastCi = -2; startPlayhead();
 }
-const DURLBL = { 16: "4 bars", 8: "2 bars", 4: "1 bar", 2: "½ bar", 1: "¼ bar" };
+function highlightNodes() {
+  const used = new Set(drawn.map((d) => d.display));
+  nodeEls.forEach((n) => { if (!n.isAdd) n.el.classList.toggle("active", used.has(palette[n.i].display)); });
+}
+function durLabel(beats) {
+  const b = beats / 4;
+  if (beats === 1) return "¼ bar"; if (beats === 2) return "½ bar"; if (beats === 3) return "¾ bar";
+  return (Number.isInteger(b) ? b : b.toFixed(2)) + (b === 1 ? " bar" : " bars");
+}
 function renderTimeline() {
   const tl = document.getElementById("timeline"); if (!tl) return;
-  tl.querySelectorAll(".htl-block").forEach((b) => b.remove());
+  tl.querySelectorAll(".htl-block,.htl-grid").forEach((b) => b.remove());
   const ph = document.getElementById("tlph");
-  if (!drawn.length) { setText("nowchord", "tap a chord"); return; }
-  let acc = 0; const html = drawn.map((c) => {
-    const left = acc / 16 * 100, w = c.beats / 16 * 100; acc += c.beats;
-    return `<div class="htl-block" style="left:${left}%;width:${w}%">
-      <span class="lab">${c.display}</span><span class="dur">${DURLBL[c.beats] || ""}</span></div>`;
-  }).join("");
+  const LB = loopBeats(), bars = Math.max(1, Math.round(LB / 4));
+  setText("loophead", `LOOP · ${bars} BAR${bars > 1 ? "S" : ""}`);
+  if (!drawn.length) { setText("nowchord", "draw a loop"); return; }
+  let html = "";
+  for (let b = 1; b < bars; b++) html += `<div class="htl-grid" style="left:${b * 4 / LB * 100}%"></div>`;
+  let acc = 0;
+  drawn.forEach((c) => {
+    const left = acc / LB * 100, w = c.beats / LB * 100; acc += c.beats;
+    html += `<div class="htl-block" style="left:${left}%;width:${w}%"><span class="lab">${c.display}</span><span class="dur">${durLabel(c.beats)}</span></div>`;
+  });
   ph.insertAdjacentHTML("beforebegin", html);
 }
-function harmonyTick() {
-  if (me?.role !== "harmony") return;
-  const ci = currentIdx();
-  document.querySelectorAll(".htl-block").forEach((b, i) => b.classList.toggle("cur", i === ci));
-  const ph = document.getElementById("tlph"); if (ph) ph.style.left = (hBeat % 16) / 16 * 100 + "%";
-  const cur = curDisplay();
-  setText("nowchord", cur);
-  document.querySelectorAll(".hnode").forEach((n) => n.classList.toggle("cur", slots[n.dataset.i]?.display === cur && cur !== "—"));
+// Smooth playhead: a local requestAnimationFrame clock running at the host tempo, soft
+// phase-locked to incoming network beats (a tiny PLL). 60fps motion, no waiting on jittery
+// beats, no backward jumps — fixes the laggy/choppy playhead.
+let phaseBeat = 0, lastFrameT = 0, rafOn = false, lastCi = -2;
+function startPlayhead() {
+  if (rafOn) return; rafOn = true; lastFrameT = performance.now();
+  const loop = (now) => {
+    if (me?.role === "harmony") {
+      const ph = document.getElementById("tlph");
+      if (!drawn.length) {                                   // nothing drawn → no loop, so no playhead
+        phaseBeat = 0;                                       // (was sweeping the strip every beat: LB fell back to 1)
+        if (ph) ph.style.opacity = "0";
+      } else {
+        if (ph) ph.style.opacity = "";
+        const LB = loopBeats(), spb = 60 / (st?.tempo || 124);
+        phaseBeat += ((now - lastFrameT) / 1000) / spb;     // advance at host tempo
+        phaseBeat = ((phaseBeat % LB) + LB) % LB;
+        renderPlayhead(phaseBeat, LB);
+      }
+    }
+    lastFrameT = now;
+    requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
 }
-function curDisplay() { const i = currentIdx(); return i >= 0 ? drawn[i].display : "—"; }
+function harmonyOnBeat(m) {                                  // ease toward the network beat (no hard snap)
+  if (!drawn.length) return;                                 // no loop yet → nothing to phase-lock
+  const LB = loopBeats();
+  let err = ((((m.bar * 4 + m.beat) % LB) - phaseBeat) % LB + LB) % LB;
+  if (err > LB / 2) err -= LB;                              // correct in the shorter direction
+  phaseBeat += err * 0.25;
+}
+function renderPlayhead(beatPos, LB) {
+  const ph = document.getElementById("tlph"); if (ph) ph.style.left = (beatPos % LB) / LB * 100 + "%";
+  let acc = 0, ci = drawn.length - 1;
+  for (let i = 0; i < drawn.length; i++) { acc += drawn[i].beats; if (beatPos < acc) { ci = i; break; } }
+  if (ci === lastCi) return;                                // repaint highlights only on chord change
+  lastCi = ci;
+  document.querySelectorAll(".htl-block").forEach((b, i) => b.classList.toggle("cur", i === ci));
+  const cur = drawn[ci]?.display || "—"; setText("nowchord", cur);
+  nodeEls.forEach((n) => { if (!n.isAdd) n.el.classList.toggle("cur", palette[n.i]?.display === cur && cur !== "—"); });
+}
+function curDisplay() { return drawn[currentIdx()]?.display || "—"; }
 function drawWheelLines() {
   const svg = document.getElementById("wlines"); if (!svg) return;
-  const at = (disp) => { const i = slots.findIndex((s) => s.display === disp); if (i < 0) return null;
-    if (i === 0) return [50, 46]; const a = (-90 + (i - 1) * 72) * Math.PI / 180; return [50 + 37 * Math.cos(a), 46 + 37 * Math.sin(a)]; };
-  svg.innerHTML = drawn.slice(1).map((d, idx) => {
-    const p1 = at(drawn[idx].display), p2 = at(d.display); if (!p1 || !p2) return "";
-    return `<line x1="${p1[0]}" y1="${p1[1]}" x2="${p2[0]}" y2="${p2[1]}" stroke="#1BA88A" stroke-width="2.5" stroke-linecap="round"/>`;
+  const center = (pi) => { const n = nodeEls.find((e) => !e.isAdd && e.i === pi); return n ? [n.cx, n.cy] : null; };
+  const lines = drawn.slice(1).map((d, idx) => {
+    const a = center(drawn[idx].pi), b = center(d.pi); if (!a || !b) return "";
+    return `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="#1BA88A" stroke-width="2.5" stroke-linecap="round"/>`;
   }).join("");
+  svg.querySelectorAll("line:not(#draghint)").forEach((l) => l.remove());
+  document.getElementById("draghint").insertAdjacentHTML("beforebegin", lines);
 }
-// chord swapper — tap a timeline chord to swap it for ANY root+quality, or remove it
-let pick = { root: 0, qid: "maj", idx: 0 };
-function openSwap(idx) {
-  const c = drawn[idx]; if (!c) return;
-  pick = { root: c.root, qid: c.quality, idx };
+
+// ---- chord picker: swap (root+quality) + length, or remove; also "add a chord" mode ----
+let pick = { root: 0, qid: "maj", idx: 0, beats: 4, add: false };
+function openPicker(idx) { const c = drawn[idx]; if (!c) return; pick = { root: c.root, qid: c.quality, idx, beats: c.beats, add: false }; sheet(); }
+function openAdd() { pick = { root: 0, qid: "maj", idx: -1, beats: 4, add: true }; sheet(); }
+function sheet() {
   const ov = document.createElement("div"); ov.className = "picker"; ov.id = "picker";
   ov.innerHTML = `<div class="sheet">
-    <h3>Chord ${idx + 1} of ${drawn.length} · ${DURLBL[c.beats] || ""}</h3>
+    <h3>${pick.add ? "Add a chord" : `Chord ${pick.idx + 1} of ${drawn.length}`}</h3>
     <div class="preview" id="pkprev"></div>
     <div class="grid" id="pkroots">${NAMES.map((nm, r) => `<div class="chip" data-r="${r}">${nm}</div>`).join("")}</div>
     <div class="quals" id="pkquals">${QUAL.map((q) => `<div class="qual" data-q="${q.id}">${q.suf || "maj"}</div>`).join("")}</div>
-    <div class="row"><button class="btn caps" id="pkremove" style="background:var(--lead);color:#fff">REMOVE</button>
+    ${pick.add ? "" : `<div class="lenrow"><span class="lenlbl mono">LENGTH</span>
+      <div class="lens" id="pklens">${LEN_OPTS.map((b) => `<div class="len" data-b="${b}">${durLabel(b)}</div>`).join("")}</div></div>`}
+    <div class="row">
+      ${pick.add ? "" : `<button class="btn caps" id="pkremove" style="background:var(--lead);color:#fff">REMOVE</button>`}
       <button class="btn caps" id="pkcancel">CANCEL</button>
-      <button class="btn caps" id="pkset" style="background:var(--harmony);color:#fff">SET</button></div>
-  </div>`;
+      <button class="btn caps" id="pkset" style="background:var(--harmony);color:#fff">${pick.add ? "ADD" : "SET"}</button>
+    </div></div>`;
   document.body.appendChild(ov);
   ov.addEventListener("pointerdown", (e) => { if (e.target === ov) closePicker(); });
-  ov.querySelectorAll("#pkroots .chip").forEach((c2) => c2.addEventListener("click", () => { pick.root = +c2.dataset.r; paintPicker(); }));
-  ov.querySelectorAll("#pkquals .qual").forEach((c2) => c2.addEventListener("click", () => { pick.qid = c2.dataset.q; paintPicker(); }));
+  ov.querySelectorAll("#pkroots .chip").forEach((c) => c.addEventListener("click", () => { pick.root = +c.dataset.r; paintPicker(); }));
+  ov.querySelectorAll("#pkquals .qual").forEach((c) => c.addEventListener("click", () => { pick.qid = c.dataset.q; paintPicker(); }));
+  ov.querySelectorAll("#pklens .len").forEach((c) => c.addEventListener("click", () => { pick.beats = +c.dataset.b; paintPicker(); }));
   document.getElementById("pkcancel").addEventListener("click", closePicker);
-  document.getElementById("pkremove").addEventListener("click", () => {
-    drawn.splice(pick.idx, 1); sendProg(); refreshHarmony(); closePicker();
-  });
   document.getElementById("pkset").addEventListener("click", () => {
-    drawn[pick.idx] = { root: pick.root, quality: pick.qid, roman: undefined,
-      display: chordLabel(pick.root, pick.qid), beats: drawn[pick.idx].beats };
-    sendProg(); refreshHarmony(); closePicker();
+    const roman = romanFor(pick.root, pick.qid);   // keep diatonic roman so the chord never goes silent
+    if (pick.add) {
+      palette.push({ root: pick.root, quality: pick.qid, roman, display: chordLabel(pick.root, pick.qid) });
+      buildWheel(); sendPalette();                  // new node appears on the host wheel in real time
+    } else {
+      const pi = palette.findIndex((p) => p.root === pick.root && p.quality === pick.qid);
+      const beats = Math.max(1, Math.min(pick.beats, 16 - (drawn.length - 1)));   // leave ≥1 beat for others
+      drawn[pick.idx] = { root: pick.root, quality: pick.qid, roman, display: chordLabel(pick.root, pick.qid), beats, pinned: true, pi };
+      refitProtect(pick.idx);                       // others adapt → loop stays exactly 4 bars
+      sendProg();
+    }
+    refreshHarmony(); closePicker();
   });
+  const rm = document.getElementById("pkremove");
+  if (rm) rm.addEventListener("click", () => { drawn.splice(pick.idx, 1); fitDurations(); sendProg(); refreshHarmony(); closePicker(); });
   paintPicker();
 }
 function paintPicker() {
-  setText("pkprev", chordLabel(pick.root, pick.qid));
+  setText("pkprev", chordLabel(pick.root, pick.qid) + (pick.add ? "" : ` · ${durLabel(pick.beats)}`));
   document.querySelectorAll("#pkroots .chip").forEach((c) => c.classList.toggle("sel", +c.dataset.r === pick.root));
   document.querySelectorAll("#pkquals .qual").forEach((c) => c.classList.toggle("sel", c.dataset.q === pick.qid));
+  document.querySelectorAll("#pklens .len").forEach((c) => c.classList.toggle("sel", +c.dataset.b === pick.beats));
 }
 function closePicker() { document.getElementById("picker")?.remove(); }
 
 // ===================================================== LEAD
-let octave = 5, leadStep = 0, phrase = [];
+// A tempo-synced live looper. The phone only PLAYS (raw notes) + sets the loop: START arms,
+// playing records, CLOSE locks the length (= how long you recorded), then keep playing to
+// overdub. OVERWRITE replaces under the playhead; LAYER overdubs. Quantize + remix (WILDNESS)
+// are host-side.
+let octave = 5, leadStep = 0, phrase = [], overwriteUi = true;
+// Semitone OFFSETS from the song key root (the keyboard is transposed into the key): white =
+// major scale (always in key), black = chromatic passing tones. b = white key the black sits after.
 const WHITE = [0,2,4,5,7,9,11], BLACK = [{ pc:1, b:1 },{ pc:3, b:2 },{ pc:6, b:4 },{ pc:8, b:5 },{ pc:10, b:6 }];
 function renderLead() {
-  screen.innerHTML = topbar("LEAD") + `
-    <div class="banner"><span class="dot"></span>YOUR PHRASE IS LOOPING</div>
-    <div class="l-sub"><span class="a">CAPTURED MOTIF</span><span class="b">locks on downbeat</span></div>
+  screen.innerHTML = slimHeader("LEAD") + `
+    <div class="banner"><span class="dot"></span>PLAY — YOUR LINE LOOPS &amp; THE ROOM REMIXES IT</div>
     <div class="motif" id="motif"></div>
+    <div class="leadrow" style="display:flex;gap:10px;margin:12px 0 2px">
+      <button id="ovtg" class="btn caps" style="flex:1;padding:14px">OVERWRITE</button>
+      <button id="leadnew" class="btn caps" style="flex:1;padding:14px">CLEAR</button>
+    </div>
+    <span class="hint" style="padding:0">play a phrase then pause — it locks to your length &amp; loops · OVERWRITE replaces under the playhead, LAYER stacks</span>
     <div class="spacer"></div>
-    <div class="l-sub"><span class="a">HIGH REGISTER · play to change</span></div>
     <div class="kb" id="kb"></div>
     <div class="l-foot">
       <div class="octave"><button id="octdn">−</button>
         <div class="val"><div class="k">OCTAVE</div><div class="v" id="octval">${octave}</div></div>
         <button id="octup">+</button></div>
-      <span class="hint" style="padding:0;flex:1">tap keys to answer the call — it loops till you do</span>
     </div>`;
   buildKeys();
   document.getElementById("octdn").addEventListener("click", () => { octave = Math.max(3, octave - 1); setText("octval", octave); });
   document.getElementById("octup").addEventListener("click", () => { octave = Math.min(7, octave + 1); setText("octval", octave); });
+  const ov = document.getElementById("ovtg");
+  ov.addEventListener("click", () => { overwriteUi = !overwriteUi; ov.textContent = overwriteUi ? "OVERWRITE" : "LAYER"; bus.control("overwrite", { on: overwriteUi }); });
+  document.getElementById("leadnew").addEventListener("click", () => { phrase = []; renderMotif(); bus.control("leadclear", {}); });
+  bus.control("overwrite", { on: overwriteUi });   // sync initial overdub mode to the host
   renderMotif();
 }
 function buildKeys() {
@@ -456,12 +565,14 @@ function buildKeys() {
     bindKey(k, pc); kb.appendChild(k);
   });
 }
-function bindKey(k, pc) {
+function bindKey(k, off) {
   k.addEventListener("pointerdown", (e) => {
     e.preventDefault(); k.classList.add("on"); setTimeout(() => k.classList.remove("on"), 180);
-    const midi = 12 * (octave + 1) + pc;
+    const root = NAMES.indexOf(st?.key || "A");
+    const midi = 12 * (octave + 1) + root + off;          // transpose the keyboard into the song key
+    const pc = ((midi % 12) + 12) % 12, oct = Math.floor(midi / 12) - 1;
     tone(440 * Math.pow(2, (midi - 69) / 12));
-    bus.control("note", { note: NAMES[pc], oct: octave });
+    bus.control("note", { note: NAMES[pc], oct });
     phrase.push({ pc }); phrase = phrase.slice(-9); renderMotif();
   });
 }
@@ -475,15 +586,17 @@ function renderMotif() {
   m.innerHTML = bars + notes;
 }
 let actx;
-function tone(f) {
+function tone(f, peak = 0.25) {
   actx ||= new (window.AudioContext || window.webkitAudioContext)();
   const o = actx.createOscillator(), g = actx.createGain();
   o.type = "sawtooth"; o.frequency.value = f; g.gain.value = 0.0001;
   o.connect(g).connect(actx.destination); o.start();
-  g.gain.exponentialRampToValueAtTime(0.25, actx.currentTime + 0.01);
+  g.gain.exponentialRampToValueAtTime(peak, actx.currentTime + 0.01);
   g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + 0.3);
   o.stop(actx.currentTime + 0.32);
 }
+// Local chord preview (harmony phone) — the player hears what they're drawing in real time.
+function chordTone(midis) { (midis || []).forEach((m) => tone(440 * Math.pow(2, (m - 69) / 12), 0.12)); }
 
 // ===================================================== utils
 function setText(id, v) { const e = document.getElementById(id); if (e) e.textContent = v; }

@@ -73,6 +73,24 @@ export async function transformPrompts(prompts) {
   return Promise.all(prompts.map(transformPrompt));
 }
 
+// Prompts for the MRT2 one-shot voice prebake (engine/prebake_voices.py): the
+// harmony/lead Tone.Sampler timbres. Unlike state.taste these use the RAW player
+// prompts — instrument one-shots should carry the genre identity ("punk" → bright/
+// edgy, per the oneshot spike FINDINGS), not the beatless-ambient texture suffix,
+// which belongs only to the off-grid atmosphere layer.
+const VOICE_DEFAULTS = {
+  harmony: "warm analog synth pad, soft mellow sustained",   // prebake_voices.py defaults
+  lead: "bright expressive lead synth, singing",
+};
+export function voicePrompts(tastes) {
+  if (!tastes.length) return VOICE_DEFAULTS;
+  const blend = tastes.join(", ").slice(0, 160);
+  return {
+    harmony: `${blend}, sustained chord pad, soft mellow`,
+    lead: `${blend}, bright expressive lead, singing`,
+  };
+}
+
 // --- CLI test mode: print both transforms side by side for quick A/B ---
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop())) {
   const args = process.argv.slice(2);

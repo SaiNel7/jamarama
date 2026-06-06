@@ -10,6 +10,23 @@
 <body>
   <!-- ================= LOBBY ================= -->
   <section id="lobby">
+    <!-- decorative sprite layer: above the character lineup, below the content cards -->
+    <div id="sprites" aria-hidden="true">
+      <img src="/assets/sprites/rainbow.png"       class="spr-sway"    style="top:5%;  left:3%;   width:170px">
+      <img src="/assets/sprites/notes.png"         class="spr-bob"     style="top:9%;  left:31%;  width:72px">
+      <img src="/assets/sprites/burst-yellow.png"  class="spr-twinkle" style="top:5%;  right:31%; width:84px; animation-duration:3.4s">
+      <img src="/assets/sprites/cloud.png"         class="spr-drift"   style="top:22%; left:11%;  width:110px">
+      <img src="/assets/sprites/sparkle-yellow.png" class="spr-twinkle" style="top:24%; right:4%; width:52px">
+      <img src="/assets/sprites/shoot-orange.png"  class="spr-hover"   style="top:7%; right:5%; width:180px; animation-delay:1.7s">
+      <img src="/assets/sprites/note-green.png"    class="spr-bob"     style="top:48%; left:4%;   width:58px; animation-delay:1.2s">
+      <img src="/assets/sprites/heart.png"         class="spr-bob"     style="top:43%; right:3%;  width:64px; animation-delay:.6s">
+      <img src="/assets/sprites/star-purple.png"   class="spr-twinkle" style="bottom:30%; right:23%; width:56px; animation-delay:1s">
+      <img src="/assets/sprites/spiral.png"        class="spr-sway"    style="bottom:7%; left:6px; width:60px; animation-delay:.8s">
+      <img src="/assets/sprites/wave.png"          class="spr-sway"    style="bottom:42%; right:2%; width:130px">
+      <img src="/assets/sprites/cloud2.png"        class="spr-drift"   style="top:56%; right:15%; width:96px; animation-duration:38s">
+      <img src="/assets/sprites/sparkle-cream.png" class="spr-twinkle" style="top:64%; left:36%;  width:44px; animation-delay:1.8s">
+      <img src="/assets/sprites/rocket.png"        class="spr-hover"   style="top:6%; left:46%; width:130px; animation-delay:.9s">
+    </div>
     <div class="lobby-wrap">
       <div class="lobby-left">
         <div class="logo xl">JAMARAMA</div>
@@ -68,10 +85,15 @@
       <!-- CENTER -->
       <div class="col">
         <div class="sec grow">
-          <span class="pill groove">MUSIC READOUT</span><span class="seclbl mono">live notes</span>
+          <span class="pill groove">MUSIC READOUT</span><span class="seclbl mono">generated · harmony + lead</span>
+          <span class="readout-toggle">
+            <button id="view-midi" class="vbtn active" type="button">MIDI</button>
+            <button id="view-sheet" class="vbtn" type="button">SHEET</button>
+          </span>
           <span class="legend"><i class="sw" style="background:var(--harmony)"></i>HARMONY
             <i class="sw" style="background:var(--lead)"></i>LEAD</span>
           <div id="roll" class="roll"></div>
+          <div id="score" class="roll score" hidden></div>
         </div>
         <div class="sec">
           <span class="pill groove">GROOVE</span><span class="seclbl mono">your instrument · X/Y</span>
@@ -88,12 +110,16 @@
       <!-- RIGHT -->
       <div class="col">
         <div class="sec grow">
-          <span class="pill lead">LEAD</span><span class="seclbl mono">keyboard</span>
-          <div class="response"><span class="pill lead sm"><span class="dot"></span>RESPONSE</span>
-            <span class="seclbl mono">looping · play to change</span></div>
+          <span class="pill lead">LEAD</span><span class="seclbl mono">your input · <span id="leadloopstate">idle</span></span>
+          <div class="response" style="align-items:center;gap:10px">
+            <span class="pill lead sm"><span class="dot"></span>WILDNESS</span>
+            <input id="leadwild" type="range" min="0" max="100" value="30" style="flex:1;accent-color:var(--lead)">
+            <span class="mono" id="leadwildval" style="font-size:13px;min-width:34px;text-align:right">30%</span>
+          </div>
+          <div class="mono caps lbl" style="margin-top:8px">WHAT YOU PLAYED <span class="seclbl mono">raw input + playhead</span></div>
+          <div id="leadloop" class="leadloop"></div>
           <div id="leadkeys" class="leadkeys"></div>
-          <div class="mono caps lbl" style="margin-top:8px">CAPTURED MOTIF</div>
-          <div id="motif" class="motif"></div>
+          <div id="motif" class="motif" hidden></div>
         </div>
         <div class="sec">
           <span class="pill crowd">CROWD</span><span class="seclbl mono">→ the mix</span>
