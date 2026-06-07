@@ -570,6 +570,9 @@ function startTunnel() {
 // state and plays to the default audio device (OS-mixed with the browser's band).
 let texture = null;            // current MRT2 child process (null when not running)
 let textureGrace = null;       // pending shutdown timer (grace window for host reloads)
+let textureStopping = false;   // true while an INTENTIONAL stop is in flight (vs a crash)
+let textureRetries = 0;        // consecutive crash respawns (reset after a healthy run)
+let textureSpawnAt = 0;        // when the current child started (to detect a healthy run)
 
 // Host tab connected → start the engine; cancel any pending shutdown from a quick reload.
 function onHostConnect() {
@@ -596,6 +599,8 @@ function startTexture() {
   const child = spawn(py, [script, `localhost:${PORT}`],
     { cwd: join(__dirname, "../engine"), env: { ...process.env, PYTHONUNBUFFERED: "1" } });
   texture = child;
+  textureStopping = false;
+  textureSpawnAt = Date.now();
   child.stdout.on("data", (d) => process.stdout.write(d));                  // engine already tags [texture]
   child.stderr.on("data", (d) => {                                          // filter ML/HF noise
     const s = d.toString();
@@ -603,11 +608,28 @@ function startTexture() {
   });
   // Only clear `texture` if THIS child is still the current one (avoids a late exit from an
   // old process wiping a freshly-spawned one).
-  child.on("exit", (c) => { if (texture === child) texture = null; console.log(`  [texture] engine exited (code ${c})`); });
+  child.on("exit", (c) => {
+    if (texture !== child) return;                                          // a newer child already replaced us
+    texture = null;
+    const healthy = Date.now() - textureSpawnAt > 60000;                    // ran a full minute → not a boot crash
+    if (textureStopping) { textureStopping = false; textureRetries = 0; console.log(`  [texture] engine stopped (code ${c})`); return; }
+    if (healthy) textureRetries = 0;                                        // fresh crash budget after a healthy run
+    // Unexpected exit (crash) while a host is still here → respawn with capped exponential backoff,
+    // so a mid-jam MLX/device failure recovers instead of leaving the room with no bed.
+    if (hostCount() > 0 && !process.env.NO_TEXTURE && textureRetries < 5) {
+      const delay = Math.min(30000, 1000 * 2 ** textureRetries);
+      textureRetries++;
+      console.log(`  [texture] engine crashed (code ${c}) — respawning in ${delay / 1000}s (attempt ${textureRetries}/5)`);
+      setTimeout(() => { if (hostCount() > 0 && !texture) startTexture(); }, delay);
+    } else {
+      console.log(`  [texture] engine exited (code ${c})${textureRetries >= 5 ? " — gave up after 5 respawns" : ""}`);
+    }
+  });
 }
 // Stop the engine when no host is connected. The child's exit handler clears `texture`.
 function stopTexture() {
   if (!texture) return;
+  textureStopping = true;                          // mark intentional so the exit handler won't respawn
   console.log("  [texture] no host connected — stopping engine\n");
   texture.kill("SIGTERM");
 }

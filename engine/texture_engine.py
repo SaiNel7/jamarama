@@ -172,15 +172,20 @@ def main():
             _emb_text[text] = mrt.embed_style(text)
         return _emb_text[text]
     _anchor = embed(ANCHOR_PROMPT)
-    def style_for(taste, lead_active, lead_prompt):
+    def style_for(taste, lead_active, lead_prompt, energy=0.0):
         embs = [embed(p) for p in taste] if taste else [_anchor]
         taste_emb = sum(embs) / len(embs)         # taste fusion (equal-weight blend)
+        # crowd energy pulls the anchor back so the genre soundscape reads MORE when the room is hot
+        # (intensity = more character, not just more motion).
+        damp = 1.0 - 0.25 * max(0.0, min(1.0, energy))
         if not lead_active:
-            return (1 - AMBIENT_ANCHOR_WEIGHT) * taste_emb + AMBIENT_ANCHOR_WEIGHT * _anchor
+            aw = AMBIENT_ANCHOR_WEIGHT * damp
+            return (1 - aw) * taste_emb + aw * _anchor
         base = taste_emb
         if lead_prompt:                           # fold the lead's timbre in → conscious of the synth
             base = (1 - LEAD_PROMPT_WEIGHT) * taste_emb + LEAD_PROMPT_WEIGHT * embed(lead_prompt)
-        return (1 - LEAD_ANCHOR_WEIGHT) * base + LEAD_ANCHOR_WEIGHT * _anchor
+        aw = LEAD_ANCHOR_WEIGHT * damp
+        return (1 - aw) * base + aw * _anchor
 
     # Latency: small chunks + a shallow queue so a chord/lead/energy change is HEARD within ~1s
     # instead of up to ~6s. FRAMES=12 ≈ 0.48s of audio per generation (MRT2 frame ≈ 0.04s).
@@ -201,7 +206,7 @@ def main():
     AMBIENT_GAIN,      LEAD_GAIN      = 0.5, 0.6
     def generate_one():
         key, scale, degree, chord_pcs, taste, energy, onset, lead_active, lead_pitches, lead_prompt = params.snapshot()
-        style = style_for(taste, lead_active, lead_prompt)
+        style = style_for(taste, lead_active, lead_prompt, energy)
         # condition on the EXACT chord pitch classes the band is playing when the host sends them
         # (covers 7ths/voicings + minor/modal keys); fall back to the roman triad otherwise.
         notes = notes_from_pcs(chord_pcs, onset=onset) if chord_pcs else chord_notes_vec(key, degree, scale, onset=onset)
@@ -210,7 +215,7 @@ def main():
                 p = int(p)                              # SUSTAINED (3) → present, not rhythmic
                 if 0 <= p < 128:
                     notes[p] = 3
-        dsp.set_gain(LEAD_GAIN if lead_active else AMBIENT_GAIN)
+        dsp.set_gain((LEAD_GAIN if lead_active else AMBIENT_GAIN) + 0.12 * max(0.0, min(1.0, energy)))  # hot room → louder bed
         wav, gen_state["state"] = mrt.generate(
             style=style, notes=notes,
             drums=[0],                     # OFF: drums come from our deterministic engine. MRT2 is
