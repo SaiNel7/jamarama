@@ -28,6 +28,3 @@ app/public/voices/
 # engine spike renders + logs (transient experiment output; scripts are committed)
 engine/spike_out/*.wav
 engine/*_log.txt
-
-# lobby soundtrack (local asset, not committed)
-app/public/lobby.mp3
