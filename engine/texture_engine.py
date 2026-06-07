@@ -202,7 +202,10 @@ def main():
     # Per-mode generation params. Lead mode commits harder to the (lead-tinted) style and
     # tracks notes more so the lead reads — but cfg_drums stays high and everything is
     # sustained, so the bed never turns rhythmic. Ambient mode is faint and formless.
-    AMBIENT_CFG_NOTES, LEAD_CFG_NOTES = 1.5, 3.0
+    # cfg_notes = how hard MRT2 adheres to the chord/key note conditioning. It was too low (1.5), so
+    # the bed drifted out of key / sounded atonal. Raise it so the texture is musical and IN KEY
+    # (the project's pitch-following sweet spot is ~4); ambient still reads atmospheric, just in-key.
+    AMBIENT_CFG_NOTES, LEAD_CFG_NOTES = 3.0, 4.5
     AMBIENT_CFG_MC,    LEAD_CFG_MC    = 3.0, 4.0
     AMBIENT_GAIN,      LEAD_GAIN      = 0.5, 0.6
     def render_chunk():

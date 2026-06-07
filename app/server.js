@@ -11,6 +11,7 @@ import { spawn } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import QRCode from "qrcode";
 import { arrangeJam } from "./taste.js";
+import { arrangeFromGenres } from "./genres.js";   // deterministic (sync) genre arrange — for tempo/key at jam start
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -363,6 +364,16 @@ wss.on("connection", (ws, req) => {
           state.leadActive = false; state.leadPitches = [];        // every jam opens on the ambient bed
           voicesManifest = null;                                   // discard last round's bake — regenerate fresh
           harmonyDrawn = false;                                    // re-seed the genre base progression this round
+          // Set the genre tempo/key/scale SYNCHRONOUSLY now (the deterministic KB is sync), so the
+          // band always starts at the genre's tempo — not the 124 fallback while the async
+          // recomputeTaste (LLM voices) is still in flight. This is what made the tempo "always 124".
+          const det = arrangeFromGenres(playerTastes());
+          if (det) {
+            if (det.tempo && !hostSetTempo) state.tempo = det.tempo;
+            if (det.key && !hostSetKey) state.key = det.key;
+            if (det.scale && !hostSetScale) state.scale = det.scale;
+            if (det.feel) state.feel = det.feel;
+          }
           if (!state.key) state.key = "A";                         // blank only in the lobby — the jam needs
           if (!state.tempo) state.tempo = 124;                     // concrete key/scale/tempo (genre fills first)
           if (!state.scale) state.scale = "major";

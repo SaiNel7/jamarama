@@ -17,7 +17,7 @@ const ROLE_LETTER = { groove: "G", harmony: "H", lead: "L", crowd: "C" };
 const ROLE_COLOR = { groove: "#F5B82E", harmony: "#1BA88A", lead: "#F4533A", crowd: "#9B7BE6" };
 
 bus.on("welcome", (m) => { st = m.state; roster = m.roster || []; paintAll(); });
-bus.on("state", (m) => { st = m.state; roster = m.roster || roster; paintAll(); });
+bus.on("state", (m) => { st = m.state; roster = m.roster || roster; paintAll(); if (lobbyGestured) startLobbyMusic(); });
 bus.on("roster", (m) => { roster = m.roster; if (st) st.crowdCount = m.crowdCount; paintRoster(); });
 bus.on("beat", () => {}); // host generates its own beat locally
 bus.on("control", (m) => {
@@ -167,12 +167,15 @@ async function applyPrebakedVoices() {
 // Lobby soundtrack: during onboarding/lobby the host plays this track while Magenta stays muted
 // (the texture engine generates nothing until jam start). Autoplay needs a user gesture, so it
 // starts on the first interaction with the host page; START THE JAM stops it.
-let lobbyAudio = null;
+let lobbyAudio = null, lobbyGestured = false;
 function startLobbyMusic() {
-  if (lobbyAudio || started || st?.phase !== "lobby") return;
+  lobbyGestured = true;
+  if (lobbyAudio || started) return;
+  if (st && st.phase !== "lobby") return;        // don't start during the jam (st null early still = lobby)
   lobbyAudio = new Audio("/lobby.mp3");
   lobbyAudio.loop = true; lobbyAudio.volume = 0.55;
-  lobbyAudio.play().catch(() => { lobbyAudio = null; });   // blocked (no gesture yet) → retry next gesture
+  lobbyAudio.play().then(() => console.log("[lobby] music playing"))
+                   .catch((e) => { lobbyAudio = null; console.log("[lobby] music blocked, retry on next gesture:", e?.name || e); });
 }
 function stopLobbyMusic() {
   if (!lobbyAudio) return;
