@@ -212,7 +212,7 @@ app.get("/prebake", (req, res) => {
   const q = (name, dflt) => String(req.query[name] || dflt).slice(0, 200);
   runPrebake({
     harmony: q("harmony", "clean smooth analog synth pad, clear warm mellow sustained chord, soft and pure"),
-    lead: q("lead", "bright expressive lead synth"),
+    lead: q("lead", "bright expressive lead synth, singing"),
     bass: q("bass", "deep round electric bass, warm sub low end"),
     drums: q("drums", "punchy acoustic drum kit, tight and clean"),
     only: ["all", "voices", "harmony", "bass", "drums"].includes(req.query.only) ? req.query.only : "all",
