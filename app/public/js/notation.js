@@ -100,14 +100,14 @@ function tileLead(playLoop, loopLen, total) {
 }
 
 // Harmony schedule (per-beat slots) → merged chord events with real MIDI notes.
-function harmonyEvents(schedule, key) {
+function harmonyEvents(schedule, key, scale) {
   const beats = Math.min(schedule.length, BARS * BEATS_PER_BAR);
   const ev = [];
   for (let i = 0; i < beats;) {
     const slot = schedule[i], k = slot.label || slot.roman;
     let run = 1;
     while (i + run < beats && (schedule[i + run].label || schedule[i + run].roman) === k) run++;
-    const keys = (slot.notes && slot.notes.length) ? slot.notes : chordMidi(key, slot.roman, 4);
+    const keys = (slot.notes && slot.notes.length) ? slot.notes : chordMidi(key, slot.roman, 4, scale);
     ev.push({ start: i * 4, dur: run * 4, keys });
     i += run;
   }
@@ -115,7 +115,7 @@ function harmonyEvents(schedule, key) {
 }
 
 // Chord-change labels (for the symbols above the treble staff): one per merged run.
-function chordLabels(schedule, key) {
+function chordLabels(schedule, key, scale) {
   const beats = Math.min(schedule.length, BARS * BEATS_PER_BAR);
   const out = [];
   for (let i = 0; i < beats;) {
@@ -123,7 +123,7 @@ function chordLabels(schedule, key) {
     let run = 1;
     while (i + run < beats && (schedule[i + run].label || schedule[i + run].roman) === k) run++;
     let name = slot.label;
-    if (!name && slot.roman) { try { name = romanToName(key, slot.roman); } catch { name = slot.roman; } }
+    if (!name && slot.roman) { try { name = romanToName(key, slot.roman, scale); } catch { name = slot.roman; } }
     out.push({ step: i * 4, text: name || slot.roman || "" });
     i += run;
   }
@@ -276,10 +276,10 @@ export class NotationView {
     // at middle C into a right hand (treble) and left hand (bass), shown as sustained chords only.
     const schedule = (st.schedule && st.schedule.length) ? st.schedule
       : (st.progression && st.progression.length ? st.progression : ["I", "IV", "V", "vi"])
-          .flatMap((roman) => Array(4).fill({ notes: chordMidi(st.key, roman, 4), roman, label: roman }));
+          .flatMap((roman) => Array(4).fill({ notes: chordMidi(st.key, roman, 4, st.scale), roman, label: roman }));
     const leadEv = reduceMono(tileLead(playLoop, loopLen, BARS * SPB));
-    const harmEv = harmonyEvents(schedule, st.key);
-    const labels = chordLabels(schedule, st.key);
+    const harmEv = harmonyEvents(schedule, st.key, st.scale);
+    const labels = chordLabels(schedule, st.key, st.scale);
 
     const SPLIT = 60;                                   // middle C → right/left hand split
     const hiEv = harmEv.map((e) => ({ ...e, keys: e.keys.filter((m) => m >= SPLIT) })).filter((e) => e.keys.length);

@@ -1,6 +1,6 @@
 // Host = lobby + console. Owns the master clock (Tone.js), the groove-driven drum
 // engine + harmony synth, and renders the live room view from broadcast state.
-import { Bus, romanToName, chordMidi, chordNotes, diatonic, scaleNotes } from "/js/shared.js";
+import { Bus, romanToName, chordMidi, chordNotes, diatonic, scaleNotes, parentRoot } from "/js/shared.js";
 import { LeadBrain } from "/js/brain/lead.js";
 import { HarmonyBrain } from "/js/brain/harmony.js";
 import { grooveStep, FEEL_SWING, bassStep } from "/js/brain/groove.js";
@@ -423,8 +423,8 @@ function bassTick(time) {
   const beatIdx = Math.floor(ph / 4) % sched.length;
   const slot = sched[beatIdx] || sched[0];
   const nslot = sched[(beatIdx + 1) % sched.length] || slot;
-  const chord = (slot.notes && slot.notes.length) ? slot.notes : chordMidi(st?.key || "A", slot.roman || "I", 4);
-  const nextChord = (nslot.notes && nslot.notes.length) ? nslot.notes : chordMidi(st?.key || "A", nslot.roman || "I", 4);
+  const chord = (slot.notes && slot.notes.length) ? slot.notes : chordMidi(st?.key || "A", slot.roman || "I", 4, st?.scale);
+  const nextChord = (nslot.notes && nslot.notes.length) ? nslot.notes : chordMidi(st?.key || "A", nslot.roman || "I", 4, st?.scale);
   const b = bassStep(st?.feel || "backbeat", ph % 16, Math.floor(ph / 16), groove.x || 0, groove.y || 0, chord, nextChord);
   if (b && Number.isFinite(b.midi)) {
     const dr = Math.max(0.05, b.dur * Tone.Time("16n").toSeconds());
@@ -484,7 +484,7 @@ function leadGenerate() {
   leadBrain.len = loopLen;
   leadBrain.setPhrase(recLoop);
   leadBrain.setKey(st?.key || "A", st?.scale || "major");
-  leadBrain.setChord(chordMidi(st?.key || "A", st?.chord || "I", 4));
+  leadBrain.setChord(chordMidi(st?.key || "A", st?.chord || "I", 4, st?.scale));
   const gen = recLoop.length ? leadBrain.generate(leadLoopIdx++, leadParams()) : [];
   // Hard guarantee in-key: snap every note to the song scale. Catches chromatic artifacts from
   // harmonize's fractional move and any out-of-key input.
@@ -765,13 +765,13 @@ const QUAL_SUFFIX = { maj: "", min: "m", "7": "7", maj7: "maj7", m7: "m7", dim: 
 const DEG_STEP = [0, 2, 4, 5, 7, 9, 11], DEG_ROMAN = ["I", "ii", "iii", "IV", "V", "vi", "vii°"];
 const NOTE12 = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 function genrePalette() {
-  const base = diatonic(st?.key || "A").slice(0, 6).map((c) => ({ roman: c.roman, display: c.name }));
+  const base = diatonic(st?.key || "A", st?.scale).slice(0, 6).map((c) => ({ roman: c.roman, display: c.name }));
   const prog = st?.progression || [], quals = st?.progressionQuals || [];
   if (!quals.length) return base;
   const out = [...base];
   prog.forEach((roman, i) => {
     const deg = DEG_ROMAN.indexOf(roman); if (deg < 0 || !quals[i]) return;
-    const rootPc = (NOTE12.indexOf(st?.key || "A") + DEG_STEP[deg]) % 12;
+    const rootPc = (parentRoot(st?.key || "A", st?.scale) + DEG_STEP[deg]) % 12;
     const display = NOTE12[rootPc] + (QUAL_SUFFIX[quals[i]] ?? "");
     if (!out.some((c) => c.display === display)) out.push({ roman, display });
   });
@@ -830,7 +830,7 @@ function renderRoll() {
     for (let i = 0; i < sched.length;) {
       const slot = sched[i], key = slot.label || slot.roman;
       let run = 1; while (i + run < sched.length && (sched[i + run].label || sched[i + run].roman) === key) run++;
-      const src = (slot.notes && slot.notes.length) ? slot.notes : chordMidi(st.key, slot.roman, 4);
+      const src = (slot.notes && slot.notes.length) ? slot.notes : chordMidi(st.key, slot.roman, 4, st.scale);
       const pcs = src.map((m) => ((m % 12) + 12) % 12);
       const used = new Set();
       pcs.forEach((_, j) => { const ri = rowOf(used, pcs, "chord"); if (ri < 0) return;

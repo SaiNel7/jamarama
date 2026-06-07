@@ -33,48 +33,76 @@ export class Bus {
 
 export const ROLE_COLOR = { groove:"#F5B82E", harmony:"#1BA88A", lead:"#F4533A", crowd:"#9B7BE6" };
 
-// Diatonic chord names per major key (degree -> {roman, name}).
+// ---- Keys, scales, modes ----------------------------------------------------
+// Every diatonic mode is a ROTATION of some major (parent) scale, so a mode's
+// seven chords ARE the parent major's seven chords — the mode only changes which
+// note feels like "home" (and where the lead keyboard starts). So all chord math
+// runs against the parent major and chords are looked up by parent-relative roman
+// numerals — which is exactly how genres.js authors its progressions (a minor
+// genre's "vi" is its home chord = the relative major's vi). `parent` below is the
+// semitones from a mode's tonic up to its parent-major tonic (A aeolian → C = +3).
+// pentatonic/chromatic are lead-only note sets; their chords fall back to major.
 const SHARP = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
 const MAJOR_STEPS = [0,2,4,5,7,9,11];
 const QUALITY = ["","m","m","","","m","dim"];
 const ROMAN = ["I","ii","iii","IV","V","vi","vii°"];
-export function diatonic(key) {
-  const root = SHARP.indexOf(key);
-  return MAJOR_STEPS.map((s, i) => ({
-    roman: ROMAN[i],
-    name: SHARP[(root + s) % 12] + QUALITY[i],
-  }));
-}
-export function romanToName(key, roman) {
-  return diatonic(key).find((c) => c.roman === roman)?.name || roman;
+const MODES = {
+  major:      { steps:[0,2,4,5,7,9,11],            parent:0  },
+  ionian:     { steps:[0,2,4,5,7,9,11],            parent:0  },
+  minor:      { steps:[0,2,3,5,7,8,10],            parent:3  },   // aeolian
+  aeolian:    { steps:[0,2,3,5,7,8,10],            parent:3  },
+  dorian:     { steps:[0,2,3,5,7,9,10],            parent:10 },
+  phrygian:   { steps:[0,1,3,5,7,8,10],            parent:8  },
+  lydian:     { steps:[0,2,4,6,7,9,11],            parent:7  },
+  mixolydian: { steps:[0,2,4,5,7,9,10],            parent:5  },
+  locrian:    { steps:[0,1,3,5,6,8,10],            parent:1  },
+  pentatonic: { steps:[0,2,4,7,9],                 parent:0  },   // major pentatonic (lead notes)
+  chromatic:  { steps:[0,1,2,3,4,5,6,7,8,9,10,11], parent:0  },
+};
+export function modeOf(scale) { return MODES[scale] || MODES.major; }
+// Pitch class of the parent-major tonic for key+mode — all chord math anchors here.
+export function parentRoot(key, scale = "major") {
+  const r = SHARP.indexOf(key); if (r < 0) return 0;
+  return (r + modeOf(scale).parent) % 12;
 }
 
-// The 7 IN-KEY notes for the lead keyboard (host + phone share this so they always match).
-// Returns [{ name, pc, step, black }] ascending from the root — `step` = semitones above the root
-// (keeps the keyboard ascending), `black` = it's an accidental (renders as a black key).
-const MINOR_STEPS = [0, 2, 3, 5, 7, 8, 10];
+// Diatonic chord names for the key's parent major (degree -> {roman, name}).
+export function diatonic(key, scale = "major") {
+  const proot = parentRoot(key, scale);
+  return MAJOR_STEPS.map((s, i) => ({
+    roman: ROMAN[i],
+    name: SHARP[(proot + s) % 12] + QUALITY[i],
+  }));
+}
+export function romanToName(key, roman, scale = "major") {
+  return diatonic(key, scale).find((c) => c.roman === roman)?.name || roman;
+}
+
+// The IN-KEY notes for the lead keyboard (host + phone share this so they always match).
+// Returns [{ name, pc, step, black }] ascending from the tonic — `step` = semitones above the
+// tonic (keeps the keyboard ascending), `black` = it's an accidental (renders as a black key).
 export function scaleNotes(key, scale = "major") {
   const root = SHARP.indexOf(key);
   if (root < 0) return [];
-  const steps = scale === "minor" ? MINOR_STEPS : MAJOR_STEPS;
-  return steps.map((step) => {
+  return modeOf(scale).steps.map((step) => {
     const name = SHARP[(root + step) % 12];
     return { name, pc: (root + step) % 12, step, black: name.includes("#") };
   });
 }
 
-// Diatonic triad as MIDI note numbers (C-1 = 0). baseOct = octave of the root.
-export function chordMidi(key, roman, baseOct = 3) {
-  const root = SHARP.indexOf(key);
+// Diatonic triad as MIDI note numbers (C-1 = 0), looked up by parent-relative roman.
+// baseOct = octave of the chord root.
+export function chordMidi(key, roman, baseOct = 3, scale = "major") {
+  const proot = parentRoot(key, scale);
   const d = ROMAN.indexOf(roman);
-  if (root < 0 || d < 0) return [];
+  if (SHARP.indexOf(key) < 0 || d < 0) return [];
   return [0, 2, 4].map((t) => {
     const idx = d + t;
     const semis = MAJOR_STEPS[idx % 7] + 12 * Math.floor(idx / 7);
-    return 12 * (baseOct + 1) + root + semis;
+    return 12 * (baseOct + 1) + proot + semis;
   });
 }
 // Same triad as Tone.js note names, e.g. ["A3","C#4","E4"].
-export function chordNotes(key, roman, baseOct = 3) {
-  return chordMidi(key, roman, baseOct).map((m) => SHARP[m % 12] + (Math.floor(m / 12) - 1));
+export function chordNotes(key, roman, baseOct = 3, scale = "major") {
+  return chordMidi(key, roman, baseOct, scale).map((m) => SHARP[m % 12] + (Math.floor(m / 12) - 1));
 }

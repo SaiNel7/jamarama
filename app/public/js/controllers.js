@@ -1,5 +1,5 @@
 // Phone controllers — rendered per assigned role. Fixed viewport, no scroll.
-import { Bus, diatonic, scaleNotes } from "/js/shared.js";
+import { Bus, diatonic, scaleNotes, parentRoot } from "/js/shared.js";
 
 const bus = new Bus("auto");
 const screen = document.getElementById("screen");
@@ -38,8 +38,10 @@ const qOf = (id) => QUAL.find((q) => q.id === id) || QUAL[0];
 const chordLabel = (root, qid) => NAMES[root] + qOf(qid).suf;
 const chordMidiNotes = (root, qid, oct = 4) => qOf(qid).iv.map((iv) => 12 * (oct + 1) + root + iv);
 const DSTEP = [0,2,4,5,7,9,11], DQUAL = ["maj","min","min","maj","maj","min","dim"], ROMANS = ["I","ii","iii","IV","V","vi","vii°"];
-function diatonicSlot(key, deg) {
-  const root = (NAMES.indexOf(key) + DSTEP[deg]) % 12;
+// Chords are diatonic to the key's PARENT major (so minor/modal keys stay in-key —
+// see shared.js parentRoot): a minor genre's "vi" resolves to its real home chord.
+function diatonicSlot(key, deg, scale = "major") {
+  const root = (parentRoot(key, scale) + DSTEP[deg]) % 12;
   return { root, quality: DQUAL[deg], roman: ROMANS[deg] };
 }
 
@@ -239,7 +241,7 @@ const loopBeats = () => drawn.reduce((a, c) => a + c.beats, 0) || 1;
 
 function initPalette() {
   if (palette.length) return;
-  palette = [0, 1, 2, 3, 4, 5].map((d) => { const s = diatonicSlot(st.key, d); return { ...s, display: chordLabel(s.root, s.quality) }; });
+  palette = [0, 1, 2, 3, 4, 5].map((d) => { const s = diatonicSlot(st.key, d, st.scale); return { ...s, display: chordLabel(s.root, s.quality) }; });
   addGenreChords();
 }
 // Add the genre's recommended (often extended) chords to the wheel so jazz/blues/etc. offer their
@@ -248,7 +250,7 @@ function addGenreChords() {
   const prog = st?.progression || [], quals = st?.progressionQuals || [];
   prog.forEach((roman, i) => {
     const deg = ROMANS.indexOf(roman); if (deg < 0) return;
-    const s = diatonicSlot(st.key, deg);
+    const s = diatonicSlot(st.key, deg, st.scale);
     const qid = quals[i] || s.quality;
     if (!palette.some((p) => p.root === s.root && p.quality === qid))
       palette.push({ root: s.root, quality: qid, roman, display: chordLabel(s.root, qid) });
@@ -271,7 +273,7 @@ function seedFromProgression() {
   initPalette();
   drawn = prog.map((roman, i) => {
     const deg = ROMANS.indexOf(roman);
-    const s = diatonicSlot(st.key, deg >= 0 ? deg : 0);
+    const s = diatonicSlot(st.key, deg >= 0 ? deg : 0, st.scale);
     const qid = quals[i] || s.quality;                // genre quality (m7/7/maj7…) or the diatonic triad
     let pi = palette.findIndex((p) => p.root === s.root && p.quality === qid);
     if (pi < 0) { palette.push({ root: s.root, quality: qid, roman, display: chordLabel(s.root, qid) }); pi = palette.length - 1; }
@@ -394,7 +396,7 @@ function fitDurations() {
   while (sum() < 16 && g++ < 999) { let mi = 0; drawn.forEach((c, i) => { if (c.beats < drawn[mi].beats) mi = i; }); drawn[mi].beats += Math.min(drawn[mi].beats, 16 - sum()); }
 }
 function romanFor(root, quality) {                 // diatonic roman (if any) → keeps host from going silent on edits
-  for (let d = 0; d < 7; d++) { const s = diatonicSlot(st.key, d); if (s.root === root && s.quality === quality) return s.roman; }
+  for (let d = 0; d < 7; d++) { const s = diatonicSlot(st.key, d, st.scale); if (s.root === root && s.quality === quality) return s.roman; }
   return undefined;
 }
 function refitProtect(idx) {                        // keep loop EXACTLY 16 beats; protect edited chord, adjust others
