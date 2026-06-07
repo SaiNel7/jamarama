@@ -88,10 +88,14 @@ html, body { height: 100%; overflow: hidden; overscroll-behavior: none; position
 
 .kb { position: relative; height: 230px; margin: 0 14px; touch-action: none; }
 .wk { position: absolute; bottom: 0; top: 0; border: var(--border); border-radius: 0 0 9px 9px; background: var(--card);
-  display: flex; align-items: flex-end; justify-content: center; padding-bottom: 12px; box-shadow: var(--shadow-sm); }
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 8px; padding-bottom: 12px; box-shadow: var(--shadow-sm); }
+.wk .kn { font: 800 14px/1 ui-monospace, monospace; color: var(--ink); margin-top: 14px; }
 .wk .d { width: 11px; height: 11px; border-radius: 50%; background: var(--gray); }
-.bk { position: absolute; top: 0; height: 62%; background: #16120D; border: 2px solid var(--ink); border-radius: 0 0 7px 7px; z-index: 3; }
-.wk.on { background: var(--lead); } .bk.on { background: var(--lead); }
+.wk.blk { background: #16120D; }
+.wk.blk .kn { color: #fff; }
+.wk.blk .d { background: #5a564d; }
+.wk.on, .wk.blk.on { background: var(--lead); }
+.wk.on .kn, .wk.blk.on .kn { color: #fff; }
 .octave { display: flex; align-items: center; gap: 0; border: var(--thick); border-radius: 14px; overflow: hidden;
   box-shadow: var(--shadow-sm); }
 .octave button { border: none; background: var(--card); font-size: 26px; font-weight: 900; padding: 10px 22px; }

@@ -114,11 +114,15 @@ app.get("/prebake", (req, res) => {
   const py = join(__dirname, "../.venv/bin/python");
   const script = join(__dirname, "../engine/prebake_voices.py");
   if (!existsSync(py) || !existsSync(script)) return res.status(500).json({ error: "prebake engine not found" });
-  const harmony = String(req.query.harmony || "warm analog synth pad, mellow").slice(0, 200);
+  const harmony = String(req.query.harmony || "clean smooth analog synth pad, clear warm mellow sustained chord, soft and pure").slice(0, 200);
   const lead = String(req.query.lead || "bright expressive lead synth").slice(0, 200);
+  const bass = String(req.query.bass || "deep round electric bass, warm sub low end").slice(0, 200);
+  const drums = String(req.query.drums || "punchy acoustic drum kit, tight and clean").slice(0, 200);
+  const only = ["all", "voices", "harmony", "bass", "drums"].includes(req.query.only) ? req.query.only : "all";
   prebaking = true;
-  console.log(`  [prebake] harmony="${harmony}" lead="${lead}" …`);
-  const child = spawn(py, [script, "--harmony", harmony, "--lead", lead, "--out", join(__dirname, "public/voices")],
+  console.log(`  [prebake] harmony="${harmony}" lead="${lead}" bass="${bass}" drums="${drums}" only=${only} …`);
+  const child = spawn(py, [script, "--harmony", harmony, "--lead", lead, "--bass", bass, "--drums", drums,
+    "--only", only, "--out", join(__dirname, "public/voices")],
     { cwd: join(__dirname, "../engine") });
   let err = "";
   child.stderr.on("data", (d) => { err += d.toString(); });

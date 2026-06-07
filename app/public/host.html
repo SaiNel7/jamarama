@@ -54,13 +54,20 @@
           <span class="pill harmony">HARMONY</span><span class="seclbl mono">chord wheel</span>
           <div id="wheel" class="wheel"></div>
         </div>
-        <div class="sec">
-          <span class="pill crowd">CROWD</span><span class="seclbl mono">live poll · <span id="voting">0</span> voting</span>
-          <div id="poll" class="poll"></div>
-          <div class="collective">
-            <div class="mono caps lbl">COLLECTIVE ENERGY</div>
-            <div class="meter"><div id="coll" class="meterfill"></div></div>
+        <div class="sec grow">
+          <span class="pill groove">RECORD</span><span class="seclbl mono">capture the generated set</span>
+          <div class="rec-row">
+            <button id="recbtn" class="recbtn caps" type="button">● RECORD</button>
+            <span class="rectime mono" id="rectime">0:00</span>
           </div>
+          <div class="mono caps lbl" style="margin-top:14px">EXPORT <span class="seclbl mono">host + generative only · no phone audio</span></div>
+          <div class="exports">
+            <button class="xbtn caps" id="x-audio" type="button" disabled>♪ AUDIO</button>
+            <button class="xbtn caps" id="x-stems" type="button" disabled>▥ STEMS</button>
+            <button class="xbtn caps" id="x-midi"  type="button" disabled>♬ MIDI</button>
+            <button class="xbtn caps" id="x-sheet" type="button" disabled>𝄞 SHEET</button>
+          </div>
+          <div class="mono rec-hint" id="rechint">record a take to enable exports</div>
         </div>
       </div>
 
@@ -104,8 +111,16 @@
           <div id="motif" class="motif" hidden></div>
         </div>
         <div class="sec">
-          <span class="pill crowd">CROWD</span><span class="seclbl mono">→ the mix</span>
-          <div id="mix" class="mix"></div>
+          <span class="pill crowd">JOIN</span><span class="seclbl mono">audience · scan to join</span>
+          <div class="join-qr"><img id="qr2" alt="join QR" /></div>
+        </div>
+        <div class="sec">
+          <span class="pill crowd">CROWD</span><span class="seclbl mono">live poll · <span id="voting">0</span> voting</span>
+          <div id="poll" class="poll"></div>
+          <div class="collective">
+            <div class="mono caps lbl">COLLECTIVE ENERGY</div>
+            <div class="meter"><div id="coll" class="meterfill"></div></div>
+          </div>
         </div>
       </div>
     </div>
