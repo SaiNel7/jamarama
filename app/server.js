@@ -292,9 +292,12 @@ wss.on("connection", (ws, req) => {
         break;
       }
       // Phone control → mutate state + tell everyone (incl. host engine).
+      // `lat` = the sender's one-way network latency estimate (RTT/2, see the pinger
+      // below) so the host can subtract transport delay when quantizing played notes.
       case "control": {
         applyControl(msg, id);
-        broadcast({ type: "control", from: id, role: clients.get(id)?.role, action: msg.action, payload: msg.payload });
+        broadcast({ type: "control", from: id, role: clients.get(id)?.role, action: msg.action,
+                    payload: msg.payload, lat: Math.round((clients.get(id)?.rtt || 0) / 2) });
         broadcastState();
         break;
       }
@@ -321,6 +324,12 @@ wss.on("connection", (ws, req) => {
         break;
       }
     }
+  });
+
+  // RTT measurement: the pinger below stamps _pingAt before each ws.ping().
+  ws.on("pong", () => {
+    const c = id != null ? clients.get(id) : null;
+    if (c && c.ws === ws && c._pingAt) c.rtt = Date.now() - c._pingAt;
   });
 
   ws.on("close", () => {
@@ -411,6 +420,15 @@ async function recomputeTaste() {
   console.log(`  [taste] blend → ${JSON.stringify(next)}`);
   broadcastState();
 }
+
+// Per-client round-trip measurement (WS ping/pong). Phones often connect through the
+// cloudflare tunnel (80–250ms RTT) — enough to smear a played note 1–2 sixteenths off
+// the grid if the host quantizes by arrival time. Control relays carry rtt/2 as `lat`.
+setInterval(() => {
+  for (const c of clients.values()) {
+    if (c.ws.readyState === c.ws.OPEN) { c._pingAt = Date.now(); try { c.ws.ping(); } catch {} }
+  }
+}, 5000);
 
 // Crowd energy decays slowly toward calm so "hold to raise" feels live.
 setInterval(() => {

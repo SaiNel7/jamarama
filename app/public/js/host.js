@@ -20,7 +20,7 @@ bus.on("state", (m) => { st = m.state; roster = m.roster || roster; paintAll(); 
 bus.on("roster", (m) => { roster = m.roster; if (st) st.crowdCount = m.crowdCount; paintRoster(); });
 bus.on("beat", () => {}); // host generates its own beat locally
 bus.on("control", (m) => {
-  if (m.action === "note") onLeadNote(m.payload);
+  if (m.action === "note") onLeadNote(m.payload, m.lat || 0);
   else if (m.action === "leadrec") (m.payload?.cmd === "start" ? leadStartRec() : leadCloseLoop());
   else if (m.action === "overwrite") overwrite = !!m.payload?.on;
   else if (m.action === "leadclear") leadClear();
@@ -391,9 +391,13 @@ function leadCloseLoop() {                         // lock the loop to the reado
 function leadClear() { recLoop = []; playLoop = []; leadSetState("idle"); renderLeadLoop(); renderRoll(); }
 
 // Record a played note at the (host-quantized) playhead. Auto-arms on the first note.
-function leadRecordNote(p) {
+// latMs = the player's one-way network latency (server-measured RTT/2): the finger was
+// on the beat, the MESSAGE arrived late — especially through the cloudflare tunnel
+// (80–250ms ≈ 1–2 sixteenths at 124bpm). Subtract it before quantizing to the grid.
+function leadRecordNote(p, latMs = 0) {
   if (leadState === "idle") leadStartRec();
-  const now = nowStep();
+  const stepMs = (60000 / (st?.tempo || 124)) / 4;            // one 16th, in ms
+  const now = Math.max(0, nowStep() - Math.round(latMs / stepMs));
   const rel = now - loopStart;
   const t = leadState === "looping" ? ((rel % loopLen) + loopLen) % loopLen : Math.max(0, rel);
   if (overwrite) recLoop = recLoop.filter((n) => n.t !== t);   // replace what's at this step
@@ -744,10 +748,10 @@ function buildLeadKeys() {
   setText("leadloopstate", leadState);
   renderLeadLoop();
 }
-function onLeadNote(p) {
+function onLeadNote(p, latMs = 0) {
   // The host does NOT echo raw taps — the player hears those live on their own phone.
   // The host only plays the QUANTIZED, generative loop (see leadTick). Here we just record.
-  leadRecordNote(p);    // record into the loop at the playhead (host-quantized)
+  leadRecordNote(p, latMs);    // record into the loop at the playhead (host-quantized, latency-compensated)
   // light the key + refresh the LEAD panel (which now shows YOUR raw input loop)
   const k = document.querySelector(`.lk[data-note="${p.note}"]`);
   if (k) { k.classList.add("on"); setTimeout(() => k.classList.remove("on"), 220); }
