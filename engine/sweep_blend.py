@@ -15,13 +15,20 @@ Two probes:
      dry (no DSP wash) to isolate blending effects from the downstream low-pass.
 
 Run:   .venv/bin/python engine/sweep_blend.py "punk" "like rain on a sunday" [more...]
-       (paste LLM rewrites from `node app/taste.js "<prompt>"` to test llm-mode blends)
+       .venv/bin/python engine/sweep_blend.py --llm "country" "punk"
+         --llm runs each prompt through the SAME transform the live lobby uses
+         (app/taste.js: soundscape rewrite via claude-haiku-4-5, key from app/.env,
+         append fallback) — so the renders test exactly what players would get.
+         Without it, the raw strings are embedded as-is.
 Output: tex_blend_*.wav in the working dir + a metrics table on stdout.
 """
 
+import json
+import subprocess
 import sys
 import time
 import wave
+from pathlib import Path
 
 import numpy as np
 
@@ -62,9 +69,30 @@ def cos(a, b):
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
 
 
-prompts = sys.argv[1:] or ["punk", "like rain on a sunday"]
+args = sys.argv[1:]
+use_llm = "--llm" in args
+prompts = [a for a in args if a != "--llm"] or ["punk", "like rain on a sunday"]
 if len(prompts) < 2:
     sys.exit("need at least 2 prompts to test a blend")
+
+if use_llm:
+    # Run the live lobby transform (app/taste.js) so we embed what players get.
+    app_dir = Path(__file__).resolve().parent.parent / "app"
+    r = subprocess.run(
+        ["node", "--env-file-if-exists=.env", "taste.js", "--json", *prompts],
+        cwd=app_dir, capture_output=True, text=True, timeout=60,
+    )
+    if r.returncode != 0:
+        sys.exit(f"taste.js failed: {r.stderr.strip()[:300]}")
+    rows = json.loads(r.stdout.strip().splitlines()[-1])
+    print("\n=== live-lobby transforms (what actually gets embedded) ===")
+    transformed = []
+    for row in rows:
+        out = row["llm"] or row["append"]
+        mode = "llm" if row["llm"] else "append-fallback"
+        print(f"  {row['prompt'][:24]!r:28s} →[{mode}] {out}")
+        transformed.append(out)
+    prompts = transformed
 
 print("Loading mrt2_small ...")
 mrt = MRT(size="mrt2_small")
@@ -110,9 +138,9 @@ written = []
 for i, (p, e) in enumerate(zip(prompts, embs)):
     written.append(render(f"solo{i}", anchored_solo := (1 - LIVE_ANCHOR_WEIGHT) * e + LIVE_ANCHOR_WEIGHT * anchor,
                           f"SOLO  {p[:40]!r}"))
-written.append(render("full_a04", anchored(0.4), f"BLEND of {len(prompts)} @ anchor .4 (live value)"))
-written.append(render("full_a02", anchored(0.2), "BLEND @ anchor .2 (tastes louder)"))
-written.append(render("full_a06", anchored(0.6), "BLEND @ anchor .6 (anchor louder)"))
+written.append(render("full_a04", anchored(0.4), f"BLEND of {len(prompts)} @ anchor .4 — THE LIVE VALUE"))
+written.append(render("full_a02", anchored(0.2), "diagnostic floor @ .2 — EXPECTED to sound song-like (proves .4 is needed)"))
+written.append(render("full_a06", anchored(0.6), "diagnostic ceiling @ .6 — anchor-heavy, tastes fading"))
 
 print("\nListen for:")
 print("  • solo_i vs full_a04 — can you still hear EACH player in the blend? (DROWN/MUSH)")

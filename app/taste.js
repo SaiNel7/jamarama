@@ -98,9 +98,19 @@ export function voicePrompts(tastes) {
 }
 
 // --- CLI test mode: print both transforms side by side for quick A/B ---
+// `--json` emits machine-readable output (used by engine/sweep_blend.py --llm
+// so offline renders test the SAME strings the live lobby produces).
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop())) {
   const args = process.argv.slice(2);
-  if (args.length) {
+  if (args[0] === "--json") {
+    const out = [];
+    for (const p of args.slice(1)) {
+      let llm = null;
+      if (hasKey()) { try { llm = await llmTransform(p); } catch {} }
+      out.push({ prompt: p, append: appendTransform(p), llm });
+    }
+    console.log(JSON.stringify(out));
+  } else if (args.length) {
     for (const p of args) {
       console.log(`\nprompt : ${p}`);
       console.log(`append : ${appendTransform(p)}`);
