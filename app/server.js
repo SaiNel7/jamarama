@@ -193,8 +193,11 @@ function runPrebake({ harmony, lead, bass, drums, only = "all" }) {
     if (!existsSync(py) || !existsSync(script)) return reject(new Error("prebake engine not found"));
     prebaking = true;
     console.log(`  [prebake] harmony="${harmony}" lead="${lead}" bass="${bass}" drums="${drums}" only=${only} …`);
-    const child = spawn(py, [script, "--harmony", harmony, "--lead", lead, "--bass", bass, "--drums", drums,
-      "--only", only, "--out", join(__dirname, "public/voices")],
+    // nice -n 15: the bake runs WHILE the jam plays (Tone.js clock in the host browser
+    // + the live texture engine) — deprioritize it so it never janks the live audio.
+    // It just finishes a little later; the voices swap in when ready either way.
+    const child = spawn("nice", ["-n", "15", py, script, "--harmony", harmony, "--lead", lead,
+      "--bass", bass, "--drums", drums, "--only", only, "--out", join(__dirname, "public/voices")],
       { cwd: join(__dirname, "../engine") });
     let err = "";
     child.stderr.on("data", (d) => { err += d.toString(); });
