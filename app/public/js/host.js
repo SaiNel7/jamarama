@@ -182,7 +182,10 @@ function stopLobbyMusic() {
   try { lobbyAudio.pause(); } catch {}
   lobbyAudio = null;
 }
-document.addEventListener("pointerdown", startLobbyMusic);   // first gesture unlocks playback
+// Unlock on the first gesture of ANY kind, in the CAPTURE phase so a child that stops propagation
+// (e.g. the scale menu) can't swallow it. play() inside the gesture satisfies the autoplay policy.
+["pointerdown", "click", "keydown", "touchstart"].forEach((ev) =>
+  document.addEventListener(ev, startLobbyMusic, true));
 
 let started = false;
 let lobbyReady = false;           // all players ready (or no players) — updated by paintRoster
@@ -195,7 +198,8 @@ async function startAudio() {
     return;
   }
   started = true;
-  stopLobbyMusic();               // jam starting → hand the room over to the band + texture
+  // NOTE: lobby music keeps playing THROUGH the loading screen and stops in beginJam (when the band
+  // actually comes in) — see stopLobbyMusic() there. Stopping it here would leave the bake silent.
   // Show the console FIRST — audio init must never hold the screen hostage. A contended
   // output device (e.g. the MRT2 texture engine holding the default sink) can make
   // Tone.start()'s AudioContext.resume() hang forever; we don't want a frozen lobby.
@@ -229,6 +233,7 @@ async function beginJam() {
   jamLive = true;
   clearTimeout(bakeWaitTimer);
   await applyPrebakedVoices();              // load this round's baked voices before a single note plays
+  stopLobbyMusic();                        // loading done → hand the room from the lobby track to the band
   const t = Tone.getTransport();
   t.scheduleRepeat(onSixteenth, "16n");
   t.start();
