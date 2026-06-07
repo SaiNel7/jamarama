@@ -12,34 +12,40 @@
   <section id="lobby">
     <!-- decorative sprite layer: above the character lineup, below the content cards -->
     <div id="sprites" aria-hidden="true">
-      <img src="/assets/sprites/rainbow.png"       class="spr-sway"    style="top:5%;  left:3%;   width:170px">
-      <img src="/assets/sprites/notes.png"         class="spr-bob"     style="top:9%;  left:31%;  width:72px">
-      <img src="/assets/sprites/burst-yellow.png"  class="spr-twinkle" style="top:5%;  right:31%; width:84px; animation-duration:3.4s">
-      <img src="/assets/sprites/cloud.png"         class="spr-drift"   style="top:22%; left:11%;  width:110px">
-      <img src="/assets/sprites/sparkle-yellow.png" class="spr-twinkle" style="top:24%; right:4%; width:52px">
-      <img src="/assets/sprites/shoot-orange.png"  class="spr-hover"   style="top:7%; right:5%; width:180px; animation-delay:1.7s">
-      <img src="/assets/sprites/note-green.png"    class="spr-bob"     style="top:48%; left:4%;   width:58px; animation-delay:1.2s">
-      <img src="/assets/sprites/heart.png"         class="spr-bob"     style="top:43%; right:3%;  width:64px; animation-delay:.6s">
-      <img src="/assets/sprites/star-purple.png"   class="spr-twinkle" style="bottom:30%; right:23%; width:56px; animation-delay:1s">
-      <img src="/assets/sprites/spiral.png"        class="spr-sway"    style="bottom:7%; left:6px; width:60px; animation-delay:.8s">
-      <img src="/assets/sprites/wave.png"          class="spr-sway"    style="bottom:42%; right:2%; width:130px">
-      <img src="/assets/sprites/cloud2.png"        class="spr-drift"   style="top:56%; right:15%; width:96px; animation-duration:38s">
-      <img src="/assets/sprites/sparkle-cream.png" class="spr-twinkle" style="top:64%; left:36%;  width:44px; animation-delay:1.8s">
-      <img src="/assets/sprites/rocket.png"        class="spr-hover"   style="top:6%; left:46%; width:130px; animation-delay:.9s">
+      <img src="/assets/sprites/rainbow.png"       class="spr-sway"    style="top:5%;  left:3%;   width:calc(170 * var(--u))">
+      <img src="/assets/sprites/notes.png"         class="spr-bob"     style="top:9%;  left:31%;  width:calc(72 * var(--u))">
+      <img src="/assets/sprites/burst-yellow.png"  class="spr-twinkle" style="top:5%;  right:31%; width:calc(84 * var(--u)); animation-duration:3.4s">
+      <img src="/assets/sprites/cloud.png"         class="spr-drift"   style="top:22%; left:11%;  width:calc(110 * var(--u))">
+      <img src="/assets/sprites/sparkle-yellow.png" class="spr-twinkle" style="top:24%; right:4%; width:calc(52 * var(--u))">
+      <img src="/assets/sprites/shoot-orange.png"  class="spr-hover"   style="top:7%; right:5%; width:calc(180 * var(--u)); animation-delay:1.7s">
+      <img src="/assets/sprites/note-green.png"    class="spr-bob"     style="top:48%; left:4%;   width:calc(58 * var(--u)); animation-delay:1.2s">
+      <img src="/assets/sprites/heart.png"         class="spr-bob"     style="top:43%; right:3%;  width:calc(64 * var(--u)); animation-delay:.6s">
+      <img src="/assets/sprites/star-purple.png"   class="spr-twinkle" style="bottom:30%; right:23%; width:calc(56 * var(--u)); animation-delay:1s">
+      <img src="/assets/sprites/spiral.png"        class="spr-sway"    style="bottom:7%; left:calc(6 * var(--u)); width:calc(60 * var(--u)); animation-delay:.8s">
+      <img src="/assets/sprites/wave.png"          class="spr-sway"    style="bottom:22%; right:3%; width:calc(130 * var(--u))">
+      <img src="/assets/sprites/cloud2.png"        class="spr-drift"   style="top:56%; right:15%; width:calc(96 * var(--u)); animation-duration:38s">
+      <img src="/assets/sprites/sparkle-cream.png" class="spr-twinkle" style="bottom:42%; left:9%; width:calc(44 * var(--u)); animation-delay:1.8s">
+      <img src="/assets/sprites/rocket.png"        class="spr-hover"   style="top:6%; left:46%; width:calc(130 * var(--u)); animation-delay:.9s">
     </div>
     <div class="lobby-wrap">
       <div class="lobby-left">
         <div class="logo xl">JAMARAMA</div>
         <div class="mono lobby-tag">because music should be for everyone</div>
         <div class="lobby-room">
-          <div class="infobox"><div class="k">ROOM</div><div class="v" id="lb-room">—</div></div>
-          <div class="infobox"><div class="k">KEY</div><div class="v" id="lb-key">—</div></div>
-          <div class="infobox"><div class="k">TEMPO</div><div class="v"><span id="lb-tempo">—</span> BPM</div></div>
+          <div class="infobox"><div class="k">ROOM</div>
+            <input id="lb-room" class="v vedit" maxlength="24" autocomplete="off" spellcheck="false" /></div>
+          <div class="infobox" id="lb-key-box" title="scroll to change"><div class="k">KEY</div>
+            <input id="lb-key" class="v vedit keyin" maxlength="2" autocomplete="off" spellcheck="false" /></div>
+          <div class="infobox" id="lb-scale-box"><div class="k">SCALE</div>
+            <button id="lb-scale" class="v vedit keybtn" type="button">—</button>
+            <div id="lb-scale-menu" class="keymenu" hidden></div></div>
+          <div class="infobox" id="lb-tempo-box" title="scroll to nudge"><div class="k">TEMPO</div>
+            <div class="v"><input id="lb-tempo" class="vedit num" type="number" min="60" max="200" step="1" /> BPM</div></div>
         </div>
         <div class="ptitle">players in the jam · <span id="lb-ready">0/0 ready</span></div>
         <div id="lb-roster" class="lb-roster"></div>
         <button id="start" class="go">▶ START THE JAM</button>
-        <div class="mono" style="font-size:13px;color:#5a564d">tap to enable audio · phones can join before & after</div>
+        <div class="mono caption">tap to enable audio · phones can join before & after</div>
       </div>
       <div class="lobby-qr card">
         <div class="ptitle" style="text-align:center">scan to join · jam·lan</div>

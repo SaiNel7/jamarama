@@ -241,7 +241,7 @@ function initPalette() {
 function renderHarmony() {
   initPalette();
   screen.innerHTML = `
-    <div class="h-key"><span class="mono">KEY · ${st.key} MAJ</span></div>
+    <div class="h-key"><span class="mono">KEY · ${st.key} ${(st.scale || "major").toUpperCase()}</span></div>
     <div class="hwheel" id="wheel"><svg class="wlines" id="wlines" viewBox="0 0 100 100" preserveAspectRatio="none">
       <line id="draghint" stroke="#5FD0A8" stroke-width="2" stroke-dasharray="3 3" stroke-linecap="round"/></svg></div>
     <div class="htl">

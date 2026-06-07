@@ -341,6 +341,58 @@ function moveLeadPlayhead(ph) {
 
 // =================================================================== INIT / LOBBY
 document.getElementById("start").addEventListener("click", startAudio);
+
+// --- editable lobby info: room (text), key (dropdown), tempo (number + scroll-jog).
+// Host-authoritative: edits go to the server, the state echo repaints everyone.
+const KEYS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const lbRoom = document.getElementById("lb-room");
+const lbKey = document.getElementById("lb-key");
+const lbTempo = document.getElementById("lb-tempo");
+let roomTimer = null;
+lbRoom.addEventListener("input", () => {
+  const v = lbRoom.value;     // capture now — a state echo may repaint the field before we fire
+  clearTimeout(roomTimer);
+  roomTimer = setTimeout(() => { roomTimer = null; bus.send({ type: "host", action: "room", payload: v }); }, 250);
+});
+// key tonic: type a note (A, F#, …) or scroll the box to cycle the circle of semitones
+lbKey.addEventListener("change", () => sendKey(lbKey.value));
+function sendKey(v) {
+  v = String(v).trim().toUpperCase().replace("♯", "#");
+  if (!KEYS.includes(v)) { lbKey.value = st?.key || "A"; return; }  // bad note → revert
+  lbKey.value = v;
+  bus.send({ type: "host", action: "key", payload: v });
+}
+document.getElementById("lb-key-box").addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const cur = KEYS.indexOf((lbKey.value || st?.key || "A").toUpperCase());
+  sendKey(KEYS[(Math.max(0, cur) + (e.deltaY < 0 ? 1 : 11)) % 12]);
+}, { passive: false });
+
+// scale/mode dropdown (a native <select>'s popup can't be styled — this menu is neobrutalist)
+const SCALES = ["major", "minor", "dorian", "phrygian", "lydian", "mixolydian", "locrian", "chromatic", "pentatonic"];
+const SCALE_ABBR = { major: "MAJ", minor: "MIN", dorian: "DOR", phrygian: "PHR", lydian: "LYD",
+                     mixolydian: "MIXO", locrian: "LOC", chromatic: "CHROM", pentatonic: "PENTA" };
+const lbScale = document.getElementById("lb-scale");
+const scaleMenu = document.getElementById("lb-scale-menu");
+scaleMenu.innerHTML = SCALES.map((s) => `<button type="button" data-s="${s}">${s.toUpperCase()}</button>`).join("");
+lbScale.addEventListener("click", (e) => { e.stopPropagation(); scaleMenu.hidden = !scaleMenu.hidden; });
+scaleMenu.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+  bus.send({ type: "host", action: "scale", payload: b.dataset.s });
+  scaleMenu.hidden = true;
+}));
+document.addEventListener("click", () => { scaleMenu.hidden = true; });   // click-away closes
+function sendTempo(v) {
+  v = Math.max(60, Math.min(200, Math.round(v) || st?.tempo || 124));
+  lbTempo.value = v;
+  bus.send({ type: "host", action: "tempo", payload: v });
+}
+lbTempo.addEventListener("change", () => sendTempo(+lbTempo.value));
+// scroll anywhere on the tempo box to jog the BPM
+document.getElementById("lb-tempo-box").addEventListener("wheel", (e) => {
+  e.preventDefault();
+  sendTempo((+lbTempo.value || st?.tempo || 124) + (e.deltaY < 0 ? 1 : -1));
+}, { passive: false });
+
 function paintAll() {
   paintInfo(); paintRoster();
   if (document.getElementById("console").hidden) return;
@@ -348,11 +400,17 @@ function paintAll() {
 }
 function paintInfo() {
   if (!st) return;
-  for (const id of ["lb-room", "room"]) setText(id, st.room);
-  for (const id of ["lb-key", "key"]) setText(id, st.key + " MAJ");
-  for (const id of ["lb-tempo", "tempo"]) setText(id, st.tempo);
+  if (!roomTimer) setVal(lbRoom, st.room);   // an in-flight edit beats a stale echo
+  setText("room", st.room);
+  setVal(lbKey, st.key);
+  lbScale.textContent = SCALE_ABBR[st.scale] || (st.scale || "major").toUpperCase();
+  scaleMenu.querySelectorAll("button").forEach((b) => b.classList.toggle("sel", b.dataset.s === st.scale));
+  setText("key", `${st.key} ${SCALE_ABBR[st.scale] || "MAJ"}`);
+  setVal(lbTempo, st.tempo); setText("tempo", st.tempo);
   setText("taste", (st.taste || []).join("  +  ") || "—");
 }
+// write a control's value from state — but never clobber the field mid-edit
+function setVal(el, v) { if (el && document.activeElement !== el) el.value = v; }
 function paintRoster() {
   const phones = roster.filter((r) => r.role !== "groove");
   const lb = document.getElementById("lb-roster");
