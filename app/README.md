@@ -57,20 +57,22 @@ removable). On START, all prompts are blended into `state.taste`
 (the MRT2 style conditioning); blank prompts just ride the blend. Late joiners skip the lobby.
 
 Player prompts shape **two** Magenta layers on jam start:
-1. **Texture bed** — transformed prompts (`state.taste`) condition the live MRT2 atmosphere.
-2. **Instrument voices** — raw prompts (genre identity intact) drive an MRT2 one-shot prebake
-   (`prebakeFromTastes()` → `engine/prebake_voices.py`, ~7s); the host gets a `voices`
-   broadcast and swaps its harmony/lead synths for the baked Tone.Samplers. Jam starts on
-   the built-in synths, personalized voices swap in — never a wait.
+1. **Texture bed** — each prompt is translated into a SOUNDSCAPE by claude-haiku-4-5
+   (`taste.js`, key in `app/.env`): "country" → "dry wind over open plains, distant horse
+   whinny, rattlesnake hiss…". Genre words make MRT2 *play* the genre (rhythmic, song-like),
+   so there is **no raw-prompt fallback** — if the LLM is unavailable, the prompt is left
+   out of the blend and the bed stays default ambient.
+2. **Instrument voices** — RAW prompts (genre identity intact, on purpose) drive an MRT2
+   one-shot prebake (`prebakeFromTastes()` → `engine/prebake_voices.py`, ~7s); the host gets
+   a `voices` broadcast and swaps its harmony/lead synths for the baked Tone.Samplers. Jam
+   starts on the built-in synths, personalized voices swap in — never a wait.
 
-Prompt ingestion (`taste.js`) has two A/B-testable modes:
+Testing the taste pipeline:
 ```bash
-npm start                                          # TASTE_MODE=append (default, offline-safe):
-                                                   #   "<prompt>, rendered as beatless ambient texture, …"
-TASTE_MODE=llm ANTHROPIC_API_KEY=sk-… npm start    # claude-haiku-4-5 rewrites each prompt into
-                                                   #   style descriptors; falls back to append on any failure
-node taste.js "punk" "like rain on a sunday"       # print both transforms side by side
-../.venv/bin/python ../engine/sweep_prompts.py     # render A/B WAVs (raw vs append vs anchor phrasings)
+node --env-file=.env taste.js "punk" "country"        # print the soundscape translations
+../.venv/bin/python ../engine/sweep_blend.py --llm "country" "punk"
+                                                      # blend metrics + A/B renders through
+                                                      # the LIVE transform (what players get)
 ```
 
 ## Architecture
@@ -87,7 +89,7 @@ phones (browser, control-only) ──WS──► Node server (relay + room state
 - `public/host.html` + `js/host.js` — master clock, audible groove, room view.
 - `public/join.html` + `js/controllers.js` — phone controllers (per role).
 - `public/js/shared.js` — WS `Bus` + protocol + diatonic-chord helpers.
-- `taste.js` — taste prompt ingestion (append / LLM rewrite) → `state.taste`.
+- `taste.js` — taste→soundscape translation (claude-haiku-4-5) → `state.taste`; raw-prompt voice prompts for the prebake.
 - `public/css/theme.css` — neo-brutalist design tokens (see `../DESIGN.md`).
 
 ## Next (per spec §12)

@@ -37,6 +37,8 @@ const joinUrl = () => `${base}/join`;
 let tunnelPending = !process.env.PUBLIC_URL && !process.env.NO_TUNNEL;
 
 // --- room state (single room for the demo) ---
+const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const SCALE_NAMES = ["major", "minor", "dorian", "phrygian", "lydian", "mixolydian", "locrian", "chromatic", "pentatonic"];
 const ROLE_COLORS = {
   groove: "#F5B82E", harmony: "#1BA88A", lead: "#F4533A", crowd: "#9B7BE6",
 };
@@ -287,10 +289,13 @@ wss.on("connection", (ws, req) => {
         broadcastState();
         break;
       }
-      // Host pad / tempo / clock-driven chord advance.
+      // Host pad / tempo / clock-driven chord advance + lobby room/key/tempo edits.
       case "host": {
         if (msg.action === "groove") state.groove = msg.payload;
-        if (msg.action === "tempo") state.tempo = msg.payload;
+        if (msg.action === "tempo") state.tempo = Math.max(60, Math.min(200, Math.round(+msg.payload) || state.tempo));
+        if (msg.action === "room") state.room = String(msg.payload ?? "").trim().slice(0, 24).toUpperCase() || state.room;
+        if (msg.action === "key" && KEY_NAMES.includes(msg.payload)) state.key = msg.payload;
+        if (msg.action === "scale" && SCALE_NAMES.includes(msg.payload)) state.scale = msg.payload;
         if (msg.action === "chord") state.chord = msg.payload;     // host advances the playhead on the downbeat
         if (msg.action === "taste") state.taste = msg.payload;
         if (msg.action === "start" && state.phase === "lobby") {   // lobby → jam (host UI gates this on all-players-ready)
@@ -377,15 +382,18 @@ function playerTastes() {
 }
 
 // Blend every player's taste prompt into state.taste (the MRT2 style conditioning).
-// Transforms run through app/taste.js (TASTE_MODE=append|llm); falls back to the
-// default bed when nobody wrote anything. Guarded against out-of-order async
-// completions so a slow LLM call can't clobber a newer recompute.
+// Prompts become soundscapes via app/taste.js (claude-haiku-4-5); prompts the LLM
+// couldn't translate are dropped — no raw-prompt fallback, genre words corrupt the
+// texture into songs. Empty blend (nobody wrote anything / LLM unavailable) falls
+// back to the default ambient bed. Guarded against out-of-order async completions
+// so a slow LLM call can't clobber a newer recompute.
 const DEFAULT_TASTE = [...state.taste];
 let tasteGen = 0;
 async function recomputeTaste() {
   const prompts = playerTastes();
   const gen = ++tasteGen;
-  const next = prompts.length ? await transformPrompts(prompts) : DEFAULT_TASTE;
+  let next = prompts.length ? await transformPrompts(prompts) : [];
+  if (!next.length) next = DEFAULT_TASTE;
   if (gen !== tasteGen) return; // a newer recompute superseded this one
   state.taste = next;
   console.log(`  [taste] blend → ${JSON.stringify(next)}`);

@@ -88,10 +88,11 @@ if use_llm:
     print("\n=== live-lobby transforms (what actually gets embedded) ===")
     transformed = []
     for row in rows:
-        out = row["llm"] or row["append"]
-        mode = "llm" if row["llm"] else "append-fallback"
-        print(f"  {row['prompt'][:24]!r:28s} →[{mode}] {out}")
-        transformed.append(out)
+        if not row["llm"]:
+            sys.exit(f"no soundscape for {row['prompt']!r} — is ANTHROPIC_API_KEY set in app/.env? "
+                     "(live behavior: this prompt would be left out of the blend)")
+        print(f"  {row['prompt'][:24]!r:28s} → {row['llm']}")
+        transformed.append(row["llm"])
     prompts = transformed
 
 print("Loading mrt2_small ...")
