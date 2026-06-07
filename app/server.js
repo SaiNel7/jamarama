@@ -268,7 +268,15 @@ wss.on("connection", (ws, req) => {
   let id = null;
   const ip = req.headers["cf-connecting-ip"] || req.socket.remoteAddress; // real phone IP through the tunnel
 
-  ws.on("message", (raw) => {
+  ws.on("message", (raw, isBinary) => {
+    // Binary frames = streamed MRT2 texture PCM from the texture engine → forward to the host
+    // browser, where it joins the WebAudio bus graph (duck + limiter + recorded export).
+    if (isBinary) {
+      if (clients.get(id)?.role !== "texture") return;
+      for (const h of clients.values())
+        if (h.role === "groove" && h.ws.readyState === h.ws.OPEN) { try { h.ws.send(raw, { binary: true }); } catch {} }
+      return;
+    }
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 

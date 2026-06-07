@@ -65,7 +65,7 @@ refreshInfo();
 // so a bad option can't break module load and silently kill the start button.
 let kick, snare, hat, chordSynth, leadSynth, bassSynth;
 let drumKit = null;                                 // MRT2 auto-chopped sample kit (null → built-in synths)
-let masterBus, drumBus, harmonyBus, leadBus, bassBus;   // record/export buses (per-stem → master → speakers)
+let masterBus, drumBus, harmonyBus, leadBus, bassBus, textureBus;   // record/export buses (per-stem → master → speakers)
 let bedDuck = null;                                 // sidechain: harmony+bass bed, ducked by kick/snare
 const recorder = new HostRecorder();
 let bar = 0, progIdx = -1, s16 = 0;
@@ -95,6 +95,10 @@ function initSynths() {
   harmonyBus = wire(new Tone.Gain(),    bedDuck,   [HP(150), LP(3200, -24)]);  // warm pad, kill >3k noise
   bassBus    = wire(new Tone.Gain(),    bedDuck,   [HP(35),  LP(2500)]);       // round low end, no fizz
   leadBus    = wire(new Tone.Gain(),    masterBus, [HP(220), LP(9000)]);       // present mids, not ducked
+  // Streamed MRT2 texture bed (PCM from the Python engine via the server) → ducked bed → master.
+  // Joining the WebAudio graph (vs the old OS-mixer path) gives the host real control: it ducks
+  // under the drums, passes the master limiter, and is captured in the recorded export.
+  textureBus = new Tone.Gain(0.85).connect(bedDuck);
   recorder.attach({ master: masterBus, drums: drumBus, harmony: harmonyBus, lead: leadBus, bass: bassBus });
 
   kick = new Tone.MembraneSynth({ octaves: 6, pitchDecay: 0.05, volume: -2 }).connect(drumBus);
@@ -572,6 +576,32 @@ function leadPitchSet() {
 function pushLeadToTexture(active, pitches) {
   bus.send({ type: "host", action: "leadNotes", payload: { active, pitches: active ? (pitches || leadPitchSet()) : [] } });
 }
+
+// --- streamed MRT2 texture playback (PCM from the Python engine, forwarded by the server) ---
+// The engine streams ~0.48s Int16 stereo chunks; schedule them back-to-back on the audio clock with
+// a small lead buffer so network jitter doesn't gap the bed. If a chunk is late (underrun) the
+// cursor re-primes. Routed through textureBus → bedDuck → master, so it ducks and is recorded.
+let texNextTime = 0;
+const TEX_LEAD = 0.18;                                  // seconds of jitter buffer ahead of the clock
+function playTexturePcm(buf) {
+  if (!textureBus) return;                              // audio engine not started yet → drop
+  const i16 = new Int16Array(buf);
+  const frames = i16.length >> 1;                       // interleaved stereo
+  if (!frames) return;
+  const ctx = Tone.getContext().rawContext;
+  const ab = ctx.createBuffer(2, frames, 48000);        // browser resamples to the context rate on play
+  const L = ab.getChannelData(0), R = ab.getChannelData(1);
+  for (let i = 0; i < frames; i++) { L[i] = i16[2 * i] / 32768; R[i] = i16[2 * i + 1] / 32768; }
+  const src = ctx.createBufferSource();
+  src.buffer = ab;
+  Tone.connect(src, textureBus);
+  const now = ctx.currentTime;
+  if (texNextTime < now + 0.02) texNextTime = now + TEX_LEAD;   // (re)prime the buffer at start / after a gap
+  src.start(texNextTime);
+  texNextTime += ab.duration;
+  src.onended = () => { try { src.disconnect(); } catch {} };
+}
+bus.onBinary(playTexturePcm);
 
 // Record a played note at the (host-quantized) playhead. Auto-arms on the first note.
 // latMs = the player's one-way network latency (server-measured RTT/2): the finger was

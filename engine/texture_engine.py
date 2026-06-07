@@ -10,7 +10,7 @@ by design, so it just needs to share the speaker, not the clock.
 Run (host audio):  ../.venv/bin/python texture_engine.py [host_ip[:port]]
 Test (no audio):   ../.venv/bin/python texture_engine.py --test
 """
-import sys, json, time, threading, queue
+import sys, os, json, time, threading, queue
 import numpy as np
 from scipy import signal
 
@@ -194,6 +194,7 @@ def main():
     audio_q = queue.Queue(maxsize=2)
     stop = threading.Event()
     gen_state = {"state": None}
+    ws_holder = {"ws": None}       # live WS to the host (set on connect) → stream PCM to the browser
     dsp = TextureDSP()
 
     # MLX is thread-bound: generation MUST run on the thread that loaded the model
@@ -204,7 +205,7 @@ def main():
     AMBIENT_CFG_NOTES, LEAD_CFG_NOTES = 1.5, 3.0
     AMBIENT_CFG_MC,    LEAD_CFG_MC    = 3.0, 4.0
     AMBIENT_GAIN,      LEAD_GAIN      = 0.5, 0.6
-    def generate_one():
+    def render_chunk():
         key, scale, degree, chord_pcs, taste, energy, onset, lead_active, lead_pitches, lead_prompt = params.snapshot()
         style = style_for(taste, lead_active, lead_prompt, energy)
         # condition on the EXACT chord pitch classes the band is playing when the host sends them
@@ -226,17 +227,22 @@ def main():
             frames=FRAMES, state=gen_state["state"],
         )
         samples = dsp.process(np.asarray(wav.samples, dtype=np.float32))  # → atmospheric wash, no drums
+        return samples, (degree, onset, energy, lead_active)
+
+    def generate_one():                                 # used by --test and the OS-audio fallback path
+        samples, info = render_chunk()
         try:
             audio_q.put(samples, timeout=2.0)
         except queue.Full:
             pass
-        return degree, onset, energy, samples.shape, lead_active
+        return info[0], info[1], info[2], samples.shape, info[3]
 
     # ---- WS client (room state) ----
     def start_ws():
         import websocket
         url = f"ws://{host}"
         def on_open(ws):
+            ws_holder["ws"] = ws
             ws.send(json.dumps({"type": "hello", "role": "texture"}))
             print(f"[texture] connected to host {url}")
         def on_message(ws, raw):
@@ -244,6 +250,8 @@ def main():
             if m.get("type") in ("welcome", "state") and "state" in m:
                 params.update_from_state(m["state"])
         def on_close(ws, *a):
+            if ws_holder["ws"] is ws:
+                ws_holder["ws"] = None
             if not stop.is_set():
                 time.sleep(1.0); start_ws()
         threading.Thread(
@@ -271,34 +279,65 @@ def main():
 
     start_ws()
 
-    # ---- audio out (default device = same speaker as the browser) ----
-    import sounddevice as sd
-    leftover = {"buf": np.zeros((0, 2), dtype=np.float32)}
-    def callback(outdata, frames, time_info, status):
-        buf = leftover["buf"]
-        while buf.shape[0] < frames:
-            try:
-                buf = np.concatenate([buf, audio_q.get_nowait()], axis=0)
-            except queue.Empty:
-                buf = np.concatenate([buf, np.zeros((frames - buf.shape[0], 2), dtype=np.float32)], axis=0)
-                break
-        outdata[:] = buf[:frames]
-        leftover["buf"] = buf[frames:]
-
     # Magenta is MUTED during onboarding/lobby — the host plays the lobby track instead. The model
-    # stays loaded/warm but we generate nothing until the jam starts (the callback outputs silence),
-    # so the texture comes in cleanly the moment the host hits START.
-    print("[texture] streaming to default output (muted until jam start) — Ctrl-C to stop")
-    with sd.OutputStream(samplerate=48000, channels=2, dtype="float32",
-                         blocksize=1024, callback=callback):
-        try:
-            while not stop.is_set():
-                if params.playing():
-                    generate_one()   # jam → keep the queue full on the main (MLX) thread
-                else:
-                    time.sleep(0.1)  # lobby → idle; the queue drains and the output is silent
-        except KeyboardInterrupt:
-            stop.set()
+    # stays loaded/warm but we generate nothing until the jam starts, so the texture comes in cleanly
+    # the moment the host hits START.
+    if os.environ.get("TEXTURE_OS_AUDIO"):
+        # FALLBACK: play to the OS default device (mixes with the browser at the OS sink). Use this if
+        # the WebAudio bridge ever misbehaves. Default path below streams PCM into the browser instead.
+        import sounddevice as sd
+        leftover = {"buf": np.zeros((0, 2), dtype=np.float32)}
+        def callback(outdata, frames, time_info, status):
+            buf = leftover["buf"]
+            while buf.shape[0] < frames:
+                try:
+                    buf = np.concatenate([buf, audio_q.get_nowait()], axis=0)
+                except queue.Empty:
+                    buf = np.concatenate([buf, np.zeros((frames - buf.shape[0], 2), dtype=np.float32)], axis=0)
+                    break
+            outdata[:] = buf[:frames]
+            leftover["buf"] = buf[frames:]
+        print("[texture] streaming to default output (muted until jam start) — Ctrl-C to stop")
+        with sd.OutputStream(samplerate=48000, channels=2, dtype="float32",
+                             blocksize=1024, callback=callback):
+            try:
+                while not stop.is_set():
+                    if params.playing():
+                        generate_one()
+                    else:
+                        time.sleep(0.1)
+            except KeyboardInterrupt:
+                stop.set()
+        return
+
+    # DEFAULT: bridge PCM to the host browser over the WS — it joins the WebAudio bus graph there
+    # (ducks under the drums, hits the master limiter, captured in the export). Generation is paced to
+    # ~real-time with a small lead so we never flood the socket (RTF ~2.5x would otherwise outrun it).
+    import websocket
+    print("[texture] bridging PCM to the host browser over WS (muted until jam start) — Ctrl-C to stop")
+    LEAD_S = 0.6                                   # seconds of audio to stay ahead of wall-clock
+    produced, t0 = 0.0, None
+    try:
+        while not stop.is_set():
+            ws = ws_holder["ws"]
+            if params.playing() and ws is not None:
+                if t0 is None:                     # jam (re)started → reset the pacing timeline
+                    t0, produced = time.time(), 0.0
+                samples, _ = render_chunk()
+                pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()  # int16 LE stereo
+                try:
+                    ws.send(pcm, opcode=websocket.ABNF.OPCODE_BINARY)
+                except Exception:
+                    pass
+                produced += FRAMES * FRAME_SEC
+                ahead = produced - (time.time() - t0)
+                if ahead > LEAD_S:
+                    time.sleep(ahead - LEAD_S)     # pace to real-time + lead buffer
+            else:
+                t0 = None
+                time.sleep(0.1)                    # lobby/idle, or waiting for the host WS
+    except KeyboardInterrupt:
+        stop.set()
 
 if __name__ == "__main__":
     main()

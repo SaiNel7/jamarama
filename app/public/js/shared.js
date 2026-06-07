@@ -3,6 +3,7 @@ export class Bus {
   constructor(role = "auto") {
     this.role = role;
     this.handlers = {};
+    this.binHandlers = [];     // raw binary frames (e.g. streamed texture PCM)
     this.id = null;
     // Stable per-tab session id: reconnects (and page reloads) reclaim the same
     // player on the server instead of churning the roster as a new one each time.
@@ -18,8 +19,10 @@ export class Bus {
     const proto = location.protocol === "https:" ? "wss" : "ws"; // match page protocol (tunnel-safe)
     const url = `${proto}://${location.host}`;
     this.ws = new WebSocket(url);
+    this.ws.binaryType = "arraybuffer";
     this.ws.onopen = () => this.send({ type: "hello", role: this.role, sid: this.sid });
     this.ws.onmessage = (e) => {
+      if (e.data instanceof ArrayBuffer) { this.binHandlers.forEach((fn) => fn(e.data)); return; }  // streamed PCM
       const msg = JSON.parse(e.data);
       if (msg.type === "welcome") this.id = msg.id;
       (this.handlers[msg.type] || []).forEach((fn) => fn(msg));
@@ -27,6 +30,7 @@ export class Bus {
     this.ws.onclose = () => setTimeout(() => this.connect(), 800); // auto-reconnect on LAN
   }
   on(type, fn) { (this.handlers[type] ||= []).push(fn); return this; }
+  onBinary(fn) { this.binHandlers.push(fn); return this; }
   send(obj) { if (this.ws.readyState === 1) this.ws.send(JSON.stringify(obj)); }
   control(action, payload) { this.send({ type: "control", action, payload }); }
 }
