@@ -37,7 +37,7 @@ ANCHOR_POS = ("ambient sustained synth pads, atmospheric drone, shimmering "
               "reverb wash, beatless, free time, textural ambience")
 ANCHOR_NEG = ("ambient texture, no drums, no bass, just texturing, not rhythmic "
               "components, create ambience only")
-ANCHOR_WEIGHT = 0.4
+ANCHOR_WEIGHT = 0.3   # live value (texture_engine.py) — keep in sync
 
 
 def chord_vec(pitches):
@@ -72,7 +72,7 @@ def render(name, style_emb, label):
         t0 = time.time()
         wav, state = mrt.generate(
             style=style_emb, notes=NOTES_AM, drums=[0],
-            cfg_notes=2.0, cfg_musiccoca=3.0, cfg_drums=6.0,
+            cfg_notes=2.0, cfg_musiccoca=3.5, cfg_drums=6.0,   # live values — keep in sync
             frames=FRAMES, state=state,
         )
         gen_time += time.time() - t0

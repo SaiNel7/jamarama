@@ -10,7 +10,7 @@ import { dirname, join } from "path";
 import { spawn } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import QRCode from "qrcode";
-import { transformPrompts, voicePrompts } from "./taste.js";
+import { arrangeJam } from "./taste.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -45,11 +45,12 @@ const ROLE_COLORS = {
 const state = {
   phase: "lobby",                   // "lobby" (pre-jam onboarding) | "jam" (host started)
   room: "BASEMENT SESSIONS",
-  key: "A", scale: "major",
-  tempo: 124,
+  key: null, scale: null,           // key/scale/tempo start BLANK — filled from the genre (or host)
+  tempo: null,                      // before the jam; a concrete fallback is set at jam start ("start")
   bar: 0, beat: 0,
   chord: "I",                       // current harmony degree (roman numeral)
   progression: ["I", "IV", "V", "vi"],
+  progressionQuals: [],             // per-chord qualities for the genre seed (jazz 7ths etc.); [] = triads
   progressionChords: [],            // [{label, notes:[midi]}] — voicing for swapped/non-diatonic chords
   palette: [],                      // harmony wheel nodes [{roman, display}] — host mirrors the wheel
   schedule: [],                     // 16 beat-slots: chord on each beat of the fixed 4-bar loop
@@ -58,6 +59,16 @@ const state = {
   mood: { brighter: 0, heavier: 0, dreamier: 0, darker: 0 },
   recentMoods: [],                 // [{mood, t}]
   groove: { x: 0.5, y: 0.5 },      // host X/Y pad
+  // Lead-aware texture: the MRT2 bed starts as barely-instrumental atmosphere and only
+  // "wakes up" to the lead once the first lead synth note plays on the host (leadActive).
+  // The lead's live loop MIDI feeds straight into the texture's note conditioning
+  // (leadPitches, sustained → non-rhythmic) and the lead timbre colors the style
+  // (leadPrompt) — so the bed becomes conscious of the synth and pushes its prominence.
+  leadActive: false,
+  leadPitches: [],                  // the lead loop's pitches (MIDI), fed into the texture
+  leadPrompt: "",                   // lead voice timbre (from the arrangement) → texture style
+  genres: [],                       // matched genres (for the host's "baking … voices" label)
+  feel: "backbeat",                 // genre drum groove (brain/groove.js): swing, fourfloor, boombap…
 };
 
 // --- clients ---
@@ -181,10 +192,13 @@ app.get("/info", async (_req, res) => {
 // Pre-bake the host's instruments (harmony + lead + bass + drum kit) from taste prompts →
 // Tone.Sampler one-shots / drum chops under public/voices/ (served statically). Offline MRT2
 // render (engine/prebake_voices.py). Triggered automatically on jam start with prompts derived
-// from the players' raw tastes (voicePrompts in taste.js); the host is told via a `voices`
+// from the fused arrangement (arrangeJam in taste.js); the host is told via a `voices`
 // broadcast and swaps its synths for the baked instruments. GET /prebake remains for manual
 // testing/re-bakes (`only` limits which instruments re-render).
 let prebaking = false;
+let voicesManifest = null;   // THIS round's fresh bake (null until it lands); cleared on jam start so
+                             // a new round never serves the previous round's samples, and re-sent to a
+                             // host that (re)connects mid-jam so the swap can't be missed.
 function runPrebake({ harmony, lead, bass, drums, only = "all" }) {
   return new Promise((resolve, reject) => {
     if (prebaking) return reject(new Error("prebake already running"));
@@ -224,11 +238,14 @@ app.get("/prebake", (req, res) => {
     .catch((e) => res.status(e.message.includes("already running") ? 409 : 500).json({ error: e.message }));
 });
 
-// Jam start → bake the full instrument set from everyone's raw taste prompts, then tell
-// the host to swap them in ("default voice instant, personalized swaps in" — spec §invariants).
+// Jam start → bake the full instrument set from the FUSED arrangement (taste.js maps
+// each instrument to a genre-true SOLO timbre), then tell the host to swap them in
+// ("default voice instant, personalized swaps in" — spec §invariants).
 async function prebakeFromTastes() {
   try {
-    const manifest = await runPrebake(voicePrompts(playerTastes()));
+    const arr = await arrangeJam(playerTastes());     // cached — recomputeTaste warmed it
+    const manifest = await runPrebake(arr.voices);
+    voicesManifest = manifest;                          // remember for hosts that (re)connect mid-jam
     broadcast({ type: "voices", manifest });
     console.log("  [prebake] taste voices ready — host notified");
   } catch (e) {
@@ -282,7 +299,11 @@ wss.on("connection", (ws, req) => {
         if (sid) sessions.set(sid, c);
         send(ws, { type: "welcome", id, role: c.role, color: c.color, state, roster: roster(), crowdCount: crowdCount() });
         broadcast({ type: "roster", roster: roster(), crowdCount: crowdCount() }, id);
-        if (c.role === "groove") onHostConnect();   // host tab opened → bring the texture engine up
+        if (c.role === "groove") {
+          onHostConnect();                          // host tab opened → bring the texture engine up
+          // a host joining/reloading mid-jam after the bake landed → hand it this round's voices
+          if (voicesManifest && state.phase === "jam") send(ws, { type: "voices", manifest: voicesManifest });
+        }
         break;
       }
       // Host clock → fan out to phones so they pulse in time.
@@ -304,14 +325,33 @@ wss.on("connection", (ws, req) => {
       // Host pad / tempo / clock-driven chord advance + lobby room/key/tempo edits.
       case "host": {
         if (msg.action === "groove") state.groove = msg.payload;
-        if (msg.action === "tempo") state.tempo = Math.max(60, Math.min(200, Math.round(+msg.payload) || state.tempo));
+        if (msg.action === "tempo") {
+          if (msg.payload === "" || msg.payload == null) { state.tempo = null; hostSetTempo = false; recomputeTaste(); }  // cleared → auto/blank (genre re-fills)
+          else { state.tempo = Math.max(60, Math.min(200, Math.round(+msg.payload) || state.tempo || 124)); hostSetTempo = true; }
+        }
         if (msg.action === "room") state.room = String(msg.payload ?? "").trim().slice(0, 24).toUpperCase() || state.room;
-        if (msg.action === "key" && KEY_NAMES.includes(msg.payload)) state.key = msg.payload;
-        if (msg.action === "scale" && SCALE_NAMES.includes(msg.payload)) state.scale = msg.payload;
+        if (msg.action === "key") {
+          if (msg.payload === "" || msg.payload == null) { state.key = null; hostSetKey = false; recomputeTaste(); }   // cleared → auto/blank
+          else if (KEY_NAMES.includes(msg.payload)) { state.key = msg.payload; hostSetKey = true; }
+        }
+        if (msg.action === "scale" && SCALE_NAMES.includes(msg.payload)) { state.scale = msg.payload; hostSetScale = true; }
         if (msg.action === "chord") state.chord = msg.payload;     // host advances the playhead on the downbeat
         if (msg.action === "taste") state.taste = msg.payload;
+        if (msg.action === "leadNotes") {                          // host: first lead note + live loop pitches
+          state.leadActive = Boolean(msg.payload?.active);
+          const ps = msg.payload?.pitches;
+          state.leadPitches = Array.isArray(ps)
+            ? ps.filter((p) => Number.isInteger(p) && p >= 0 && p < 128).slice(0, 8) : [];
+        }
         if (msg.action === "start" && state.phase === "lobby") {   // lobby → jam (host UI gates this on all-players-ready)
           state.phase = "jam";
+          state.leadActive = false; state.leadPitches = [];        // every jam opens on the ambient bed
+          voicesManifest = null;                                   // discard last round's bake — regenerate fresh
+          harmonyDrawn = false;                                    // re-seed the genre base progression this round
+          if (!state.key) state.key = "A";                         // blank only in the lobby — the jam needs
+          if (!state.tempo) state.tempo = 124;                     // concrete key/scale/tempo (genre fills first)
+          if (!state.scale) state.scale = "major";
+
           const players = roster().filter((p) => p.role !== "groove");
           console.log(`  [lobby] host started the jam (${players.filter((p) => p.ready).length}/${players.length} players ready)`);
           recomputeTaste();                                        // async; broadcasts again when transforms land
@@ -354,15 +394,25 @@ function applyControl(msg, id) {
     case "chord":          // harmony: set current chord degree
       state.chord = payload.degree;
       break;
-    case "progression":    // harmony: replace the drawn loop
-      state.progression = payload.degrees;
-      // additive: per-step chord {label, notes:[midi]} so swapped/non-diatonic chords
-      // can be voiced from notes (host can read this when integrating arbitrary chords).
-      if (payload.chords) state.progressionChords = payload.chords;
-      // additive: 16-beat schedule (chord playing on each beat of the fixed 4-bar loop).
-      // Host plays state.schedule[(bar*4+beat) % 16] each beat for sub-bar chord durations.
-      if (payload.schedule) state.schedule = payload.schedule;
+    case "progression": {  // harmony: replace the drawn loop
+      const degs = payload.degrees || [];
+      harmonyDrawn = degs.length > 0;          // a real draw → stop seeding the genre default
+      if (harmonyDrawn) {
+        state.progression = degs;
+        // additive: per-step chord {label, notes:[midi]} so swapped/non-diatonic chords
+        // can be voiced from notes (host can read this when integrating arbitrary chords).
+        if (payload.chords) state.progressionChords = payload.chords;
+        // additive: 16-beat schedule (chord playing on each beat of the fixed 4-bar loop).
+        // Host plays state.schedule[(bar*4+beat) % 16] each beat for sub-bar chord durations.
+        if (payload.schedule) state.schedule = payload.schedule;
+      } else {                                 // cleared → fall back to the genre base progression
+        state.progression = genreProgression || ["I", "IV", "V", "vi"];
+        state.progressionQuals = genreQuals || [];
+        state.progressionChords = [];
+        state.schedule = [];
+      }
       break;
+    }
     case "palette":        // harmony wheel nodes [{roman, display}] → host mirrors the wheel
       state.palette = payload.nodes;
       break;
@@ -394,13 +444,25 @@ function applyControl(msg, id) {
   }
 }
 
-// Every player's raw (untransformed) taste prompt — feeds both the texture blend
-// (transformed) and the one-shot voice prebake (raw, keeps genre identity).
+// Every player's raw taste prompt — fed to the jam arranger (taste.js) which produces
+// the texture soundscape, the four solo voice timbres, and the genre base progression.
 function playerTastes() {
   return [...clients.values()]
     .filter((c) => c.role !== "texture" && c.role !== "groove" && c.taste)
     .map((c) => c.taste);
 }
+
+// The genre arrangement seeds DEFAULTS (the base progression / scale "chord tree")
+// that the room starts from — but the harmony player and host can override. We only
+// (re)apply the genre default when nobody has overridden it, so a mid-jam recompute
+// (e.g. a crowd member disconnects) never clobbers a drawn progression or a host's
+// chosen scale.
+let genreProgression = null;          // last genre base progression (roman[]), or null
+let genreQuals = null;                // its per-chord qualities (qid[]) for the seed
+let harmonyDrawn = false;             // the harmony player drew a custom loop
+let hostSetScale = false;             // the host explicitly picked a scale
+let hostSetKey = false;               // the host explicitly picked a key  → genre won't override
+let hostSetTempo = false;             // the host explicitly set the tempo → genre won't override
 
 // Blend every player's taste prompt into state.taste (the MRT2 style conditioning).
 // Prompts become soundscapes via app/taste.js (claude-haiku-4-5); prompts the LLM
@@ -411,13 +473,32 @@ function playerTastes() {
 const DEFAULT_TASTE = [...state.taste];
 let tasteGen = 0;
 async function recomputeTaste() {
-  const prompts = playerTastes();
   const gen = ++tasteGen;
-  let next = prompts.length ? await transformPrompts(prompts) : [];
-  if (!next.length) next = DEFAULT_TASTE;
+  const arr = await arrangeJam(playerTastes());
   if (gen !== tasteGen) return; // a newer recompute superseded this one
-  state.taste = next;
-  console.log(`  [taste] blend → ${JSON.stringify(next)}`);
+  state.taste = arr.texture.length ? arr.texture : DEFAULT_TASTE;
+  // Genre base progression / scale: seed the room's defaults, but never stomp a
+  // drawn progression or a host-chosen scale (see flags above).
+  genreProgression = arr.progression;
+  genreQuals = arr.progQuals;
+  if (genreProgression && !harmonyDrawn) {
+    state.progression = genreProgression;
+    state.progressionQuals = arr.progQuals || [];
+    state.schedule = [];                 // let the host expand the progression itself
+    state.progressionChords = [];
+  }
+  if (arr.scale && !hostSetScale) state.scale = arr.scale;
+  if (arr.key && !hostSetKey) state.key = arr.key;          // genre fills key/scale/tempo unless host set them
+  if (arr.tempo && !hostSetTempo) state.tempo = arr.tempo;
+  if (state.phase === "jam") {                              // the jam always needs concrete values (blank only in lobby)
+    if (!state.key) state.key = "A";
+    if (!state.scale) state.scale = "major";
+    if (!state.tempo) state.tempo = 124;
+  }
+  state.leadPrompt = arr.voices.lead || state.leadPrompt;   // lead timbre for the lead-conscious texture
+  state.genres = arr.genres || [];
+  if (arr.feel) state.feel = arr.feel;              // genre drum groove
+  console.log(`  [taste] texture → ${JSON.stringify(state.taste)} feel=${state.feel}`);
   broadcastState();
 }
 

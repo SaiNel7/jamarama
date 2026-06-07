@@ -45,7 +45,7 @@ AM = [57, 60, 64]
 # Keep in sync with engine/texture_engine.py
 ANCHOR_PROMPT = ("ambient sustained synth pads, atmospheric drone, shimmering "
                  "reverb wash, beatless, free time, textural ambience")
-LIVE_ANCHOR_WEIGHT = 0.4
+LIVE_ANCHOR_WEIGHT = 0.3
 
 
 def chord_vec(pitches):
@@ -84,16 +84,15 @@ if use_llm:
     )
     if r.returncode != 0:
         sys.exit(f"taste.js failed: {r.stderr.strip()[:300]}")
-    rows = json.loads(r.stdout.strip().splitlines()[-1])
-    print("\n=== live-lobby transforms (what actually gets embedded) ===")
-    transformed = []
-    for row in rows:
-        if not row["llm"]:
-            sys.exit(f"no soundscape for {row['prompt']!r} — is ANTHROPIC_API_KEY set in app/.env? "
-                     "(live behavior: this prompt would be left out of the blend)")
-        print(f"  {row['prompt'][:24]!r:28s} → {row['llm']}")
-        transformed.append(row["llm"])
-    prompts = transformed
+    arr = json.loads(r.stdout.strip().splitlines()[-1])
+    print("\n=== live arrangement (what actually gets embedded) ===")
+    print(f"  genres: {arr.get('genres')}  prog: {arr.get('progression')}  scale: {arr.get('scale')}")
+    if not arr.get("texture"):
+        sys.exit("empty texture — no genre matched and no ANTHROPIC_API_KEY for the vibe enricher "
+                 "(live behavior: the bed plays the default ambient).")
+    for t in arr["texture"]:
+        print(f"   • {t}")
+    prompts = arr["texture"]   # the live room embeds the fused texture strings, not raw prompts
 
 print("Loading mrt2_small ...")
 mrt = MRT(size="mrt2_small")
@@ -124,7 +123,7 @@ def render(name, style, label):
         t0 = time.time()
         wav, state = mrt.generate(
             style=style, notes=NOTES_AM, drums=[0],
-            cfg_notes=2.0, cfg_musiccoca=3.0, cfg_drums=6.0,
+            cfg_notes=2.0, cfg_musiccoca=3.5, cfg_drums=6.0,   # live values — keep in sync
             frames=FRAMES, state=state,
         )
         gen += time.time() - t0
@@ -139,12 +138,12 @@ written = []
 for i, (p, e) in enumerate(zip(prompts, embs)):
     written.append(render(f"solo{i}", anchored_solo := (1 - LIVE_ANCHOR_WEIGHT) * e + LIVE_ANCHOR_WEIGHT * anchor,
                           f"SOLO  {p[:40]!r}"))
-written.append(render("full_a04", anchored(0.4), f"BLEND of {len(prompts)} @ anchor .4 — THE LIVE VALUE"))
-written.append(render("full_a02", anchored(0.2), "diagnostic floor @ .2 — EXPECTED to sound song-like (proves .4 is needed)"))
-written.append(render("full_a06", anchored(0.6), "diagnostic ceiling @ .6 — anchor-heavy, tastes fading"))
+written.append(render("full_a03", anchored(0.3), f"BLEND of {len(prompts)} @ anchor .3 — THE LIVE VALUE"))
+written.append(render("full_a02", anchored(0.2), "diagnostic floor @ .2 — more taste, watch for rhythmic leak"))
+written.append(render("full_a05", anchored(0.5), "diagnostic ceiling @ .5 — anchor-heavy, tastes fading"))
 
 print("\nListen for:")
-print("  • solo_i vs full_a04 — can you still hear EACH player in the blend? (DROWN/MUSH)")
-print("  • full_a02 vs a04 vs a06 — where does taste die into wallpaper? (TAKEOVER)")
+print("  • solo_i vs full_a03 — can you still hear EACH player in the blend? (DROWN/MUSH)")
+print("  • full_a02 vs a03 vs a05 — where does taste die into wallpaper? (TAKEOVER)")
 print("  • re-run with LLM rewrites (node app/taste.js \"<prompt>\") to A/B append vs llm blends")
 print("\nFiles:", "  ".join(written))

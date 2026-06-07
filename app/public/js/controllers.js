@@ -240,9 +240,49 @@ const loopBeats = () => drawn.reduce((a, c) => a + c.beats, 0) || 1;
 function initPalette() {
   if (palette.length) return;
   palette = [0, 1, 2, 3, 4, 5].map((d) => { const s = diatonicSlot(st.key, d); return { ...s, display: chordLabel(s.root, s.quality) }; });
+  addGenreChords();
+}
+// Add the genre's recommended (often extended) chords to the wheel so jazz/blues/etc. offer their
+// 7ths one tap away — not just the bare diatonic triads.
+function addGenreChords() {
+  const prog = st?.progression || [], quals = st?.progressionQuals || [];
+  prog.forEach((roman, i) => {
+    const deg = ROMANS.indexOf(roman); if (deg < 0) return;
+    const s = diatonicSlot(st.key, deg);
+    const qid = quals[i] || s.quality;
+    if (!palette.some((p) => p.root === s.root && p.quality === qid))
+      palette.push({ root: s.root, quality: qid, roman, display: chordLabel(s.root, qid) });
+  });
+}
+
+// The chord tree's DEFAULT loop = the genre base progression (state.progression, set
+// by the server from the fused taste). We seed it into `drawn` so the harmony player
+// starts ON their genre's progression (visible + editable), instead of a blank wheel.
+// We never auto-send it (the host already plays state.progression); a real drag/edit
+// marks `userDrew` and stops the seeding, so we never fight the player. Clearing the
+// loop drops `userDrew` → the genre default comes back.
+let userDrew = false;
+let lastSeededProg = "";
+function seedFromProgression() {
+  if (userDrew) return;
+  const prog = st?.progression || [], quals = st?.progressionQuals || [];
+  const key = prog.join(",") + "|" + quals.join(",");
+  if (!prog.length || key === lastSeededProg) return;
+  initPalette();
+  drawn = prog.map((roman, i) => {
+    const deg = ROMANS.indexOf(roman);
+    const s = diatonicSlot(st.key, deg >= 0 ? deg : 0);
+    const qid = quals[i] || s.quality;                // genre quality (m7/7/maj7…) or the diatonic triad
+    let pi = palette.findIndex((p) => p.root === s.root && p.quality === qid);
+    if (pi < 0) { palette.push({ root: s.root, quality: qid, roman, display: chordLabel(s.root, qid) }); pi = palette.length - 1; }
+    return { root: s.root, quality: qid, roman, display: chordLabel(s.root, qid), beats: 4, pinned: false, pi };
+  });
+  fitDurations();
+  lastSeededProg = key;
 }
 function renderHarmony() {
   initPalette();
+  seedFromProgression();                            // start on the genre base progression
   screen.innerHTML = `
     <div class="h-key"><span class="mono">KEY · ${st.key} ${(st.scale || "major").toUpperCase()}</span></div>
     <div class="hwheel" id="wheel"><svg class="wlines" id="wlines" viewBox="0 0 100 100" preserveAspectRatio="none">
@@ -258,7 +298,7 @@ function renderHarmony() {
   buildWheel();
   bindWheelDrag();
   sendPalette();                                   // host wheel mirrors the phone (I centered)
-  document.getElementById("clear").addEventListener("click", () => { drawn = []; sendProg(); refreshHarmony(); });
+  document.getElementById("clear").addEventListener("click", () => { drawn = []; userDrew = false; lastSeededProg = ""; sendProg(); refreshHarmony(); });
   document.getElementById("timeline").addEventListener("click", (e) => {
     const b = e.target.closest(".htl-block"); if (!b) return;
     const idx = [...document.querySelectorAll(".htl-block")].indexOf(b);
@@ -324,6 +364,7 @@ function bindWheelDrag() {
   W.addEventListener("pointercancel", end);
 }
 function pushDraw(i) {
+  userDrew = true;                                   // a real drag → stop seeding the genre default
   const s = palette[i];
   drawn.push({ root: s.root, quality: s.quality, roman: s.roman, display: s.display, beats: 4, pinned: false, pi: i });
   lastDrawNode = i;
@@ -389,6 +430,7 @@ function sendPalette() {
 }
 function refreshHarmony() {
   if (me?.role !== "harmony") return;
+  seedFromProgression();                            // re-seed if the genre progression changed & player hasn't drawn
   highlightNodes(); drawWheelLines(); renderTimeline(); lastCi = -2; startPlayhead();
 }
 function highlightNodes() {
@@ -500,6 +542,7 @@ function sheet() {
       palette.push({ root: pick.root, quality: pick.qid, roman, display: chordLabel(pick.root, pick.qid) });
       buildWheel(); sendPalette();                  // new node appears on the host wheel in real time
     } else {
+      userDrew = true;                              // editing a chord is a real draw
       const pi = palette.findIndex((p) => p.root === pick.root && p.quality === pick.qid);
       const beats = Math.max(1, Math.min(pick.beats, 16 - (drawn.length - 1)));   // leave ≥1 beat for others
       drawn[pick.idx] = { root: pick.root, quality: pick.qid, roman, display: chordLabel(pick.root, pick.qid), beats, pinned: true, pi };
@@ -509,7 +552,7 @@ function sheet() {
     refreshHarmony(); closePicker();
   });
   const rm = document.getElementById("pkremove");
-  if (rm) rm.addEventListener("click", () => { drawn.splice(pick.idx, 1); fitDurations(); sendProg(); refreshHarmony(); closePicker(); });
+  if (rm) rm.addEventListener("click", () => { userDrew = true; drawn.splice(pick.idx, 1); fitDurations(); sendProg(); refreshHarmony(); closePicker(); });
   paintPicker();
 }
 function paintPicker() {
@@ -570,16 +613,35 @@ function buildKeys() {
     bindKey(k, nt); kb.appendChild(k);
   });
 }
+// HOLD = note length. pointerdown sends note-ON (host records the onset); pointerup sends note-OFF
+// with how long it was held, so the host sets the recorded note's DURATION. The local tone sustains
+// while held so the player hears the length they're playing.
+let leadNoteSeq = 0;
 function bindKey(k, nt) {
-  k.addEventListener("pointerdown", (e) => {
-    e.preventDefault(); k.classList.add("on"); setTimeout(() => k.classList.remove("on"), 180);
+  let active = null;
+  const down = (e) => {
+    e.preventDefault();
+    if (active) return;                                   // ignore auto-repeat / second pointer on same key
+    k.classList.add("on");
     const root = NAMES.indexOf(st?.key || "A");
     const midi = 12 * (octave + 1) + root + nt.step;      // ascending in-key note at the chosen octave
     const pc = ((midi % 12) + 12) % 12, oct = Math.floor(midi / 12) - 1;
-    tone(440 * Math.pow(2, (midi - 69) / 12));
-    bus.control("note", { note: NAMES[pc], oct });        // host lights the matching key + records
+    const id = ++leadNoteSeq;
+    active = { id, t0: performance.now(), stop: holdTone(440 * Math.pow(2, (midi - 69) / 12)) };
+    bus.control("note", { note: NAMES[pc], oct, on: true, id });   // onset; length follows on release
     phrase.push({ pc }); phrase = phrase.slice(-9); renderMotif();
-  });
+  };
+  const up = () => {
+    if (!active) return;
+    k.classList.remove("on");
+    active.stop();                                        // release the sustained local tone
+    bus.control("note", { on: false, id: active.id, heldMs: performance.now() - active.t0 });
+    active = null;
+  };
+  k.addEventListener("pointerdown", down);
+  k.addEventListener("pointerup", up);
+  k.addEventListener("pointercancel", up);
+  k.addEventListener("pointerleave", up);
 }
 function renderMotif() {
   const m = document.getElementById("motif"); if (!m) return;
@@ -599,6 +661,21 @@ function tone(f, peak = 0.25) {
   g.gain.exponentialRampToValueAtTime(peak, actx.currentTime + 0.01);
   g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + 0.3);
   o.stop(actx.currentTime + 0.32);
+}
+// Sustained tone for HELD lead notes — attack, then ring until stop() is called (note release).
+function holdTone(f, peak = 0.25) {
+  actx ||= new (window.AudioContext || window.webkitAudioContext)();
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = "sawtooth"; o.frequency.value = f; g.gain.value = 0.0001;
+  o.connect(g).connect(actx.destination); o.start();
+  g.gain.exponentialRampToValueAtTime(peak, actx.currentTime + 0.01);   // attack, then sustain while held
+  return () => {                                                        // release
+    const t = actx.currentTime;
+    g.gain.cancelScheduledValues(t);
+    g.gain.setValueAtTime(Math.max(g.gain.value, 0.0001), t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+    o.stop(t + 0.12);
+  };
 }
 // Local chord preview (harmony phone) — the player hears what they're drawing in real time.
 function chordTone(midis) { (midis || []).forEach((m) => tone(440 * Math.pow(2, (m - 69) / 12), 0.12)); }

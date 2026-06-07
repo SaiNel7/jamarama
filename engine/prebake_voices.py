@@ -47,17 +47,27 @@ FPS = 25                  # MRT2 frames per second (25 frames = 1 s @ 48 kHz)
 # ---- pitched-voice render params (empirically locked; see spike_out/FINDINGS.md) ----
 ONSET_FRAMES = 2          # ~80 ms attack call (slot=2)
 SUSTAIN_FRAMES = 70       # ~2.8 s body (slot=1) — long enough to cut several variations from
-CFG_NOTES = 4.0           # spike sweet spot (steadier than 6)
-CFG_MC = 3.0              # style commitment
+# TEXTURAL SYNTHESIS: a strong note constraint (cfg_notes=4) forced MRT2 to emit a clean,
+# SYNTHETIC pitched tone and starved the realistic instrument character that lives in the style
+# embedding. So we generate each voice the way the texture engine does — STYLE-DOMINANT: a light
+# note constraint, heavy style commitment, warmer temperature for natural movement. Pitch stays
+# detectable (A/B: voiced 0.81–0.94 at these values; we detect+relabel f0 anyway).
+CFG_NOTES = 4.0           # keep pitch COVERAGE: lower (3) collapses the harvest to ~2 pitches → heavy
+                          # phase-vocoder octave-fill, which itself sounds artificial. Realism comes
+                          # from the levers below + the preserved attack, not from starving the pitch.
+CFG_MC = 5.0              # was 3.5 — commit HARD to the instrument's real timbre (the realism knob)
 CFG_DRUMS_OFF = 6.0       # suppress percussion while rendering pitched tones
-TEMP = 1.0
+TEMP = 1.25               # was 1.0 — natural micro-movement/vibrato instead of a dead static tone
 TOPK = 40
 # Anchors to request per voice. We spread across octaves AND pitch classes: octave is
 # unreliable (the model collapses dark timbres to one register) but pitch CLASS is reliable,
 # so requesting several classes harvests more distinct detected pitches in one pass. Whatever
 # we get is deduped by detected pitch and then octave-filled to the grid below.
 ANCHORS = [36, 43, 48, 55, 60, 67, 72, 79]   # C2 G2 C3 G3 C4 G4 C5 G5
-CLEAN_SUFFIX = "single sustained note, clean tone, no drums, no percussion"
+# SOLO + REALISM framing: name ONE instrument playing alone, and push the embedding toward a REAL
+# RECORDED performance (warm, expressive, rich harmonics) rather than a sterile synth tone. We avoid
+# the word "acoustic" so electronic voices (analog synth, 808) still read as their own real thing.
+CLEAN_SUFFIX = "solo instrument, close-mic studio recording, natural expressive performance, warm rich full harmonics, single sustained note, no other instruments, no drums, no percussion"
 
 # ---- sampler coverage grid (what the host actually plays across) ----
 GRID_LO, GRID_HI, GRID_STEP = 36, 84, 4      # C2..C6 every 4 semitones (max ~2-st resample)
@@ -238,27 +248,41 @@ def detect_midi(x, requested):
     return requested, 0.0
 
 
-def cut_variations(x, n_var=VOICE_VARIATIONS):
-    """Cut `n_var` windows from one render that are SUPER SIMILAR — same timbre/tuning, only a small
-    phase offset apart (n_var=1 → a single clean voice, used for the chords). All cuts come from the
-    SETTLED steady-state region: we skip the attack/onset (its transient is brighter/noisier and
-    unlike the body) and the very tail (the model can drift/degrade there). The cuts are spread over
-    only ~120 ms. Each is tight-onset'd so it still starts sounding at sample[0]. Returns [T,2] list."""
+def cut_variations(x, n_var=VOICE_VARIATIONS, keep_attack=False):
+    """Cut `n_var` windows from one render.
+
+    keep_attack=False (CHORDS / harmony): cuts come from the SETTLED steady-state — we skip the
+    attack/onset (its transient is brighter/noisier and unlike the body) because stacked chord
+    onsets read as noise (spike FINDINGS). Spread over ~120 ms → near-identical cuts.
+
+    keep_attack=True (MELODIC voices / lead, bass): every cut STARTS AT THE TRANSIENT and keeps the
+    instrument's ATTACK — a Rhodes bell, a trumpet breath, a plucked-bass thump. That onset is where
+    instrument identity lives; cutting it off (the old behavior) is what made every voice collapse
+    into a generic sustained tone. Monophonic voices don't stack, so the attack is pure articulation,
+    not chord mud. All variations include the attack (so every played note has it).
+
+    Each cut is tight-onset'd so it starts sounding at sample[0]. Returns [T,2] list."""
     win = int(VOICE_VAR_LEN_S * SR)
     body = tight_onset(x)                                  # transient at 0
     total = len(body)
     if total < win:
         body = np.pad(body, ((0, win - total), (0, 0)))
         total = win
-    settle = int(0.30 * SR)                                # skip attack/settling → steady state
     tail = int(0.20 * SR)                                  # keep clear of end drift
-    start0 = min(settle, max(0, total - win))
-    last_start = max(start0, total - tail - win)
-    hopspan = min(max(0, last_start - start0), int(0.12 * SR))   # ≤120 ms spread → near-identical cuts
+    if keep_attack:
+        start0 = 0                                         # START on the attack → keep the articulation
+        hopspan = 0                                        # every variation includes the full attack
+    else:
+        settle = int(0.30 * SR)                            # skip attack/settling → steady state
+        start0 = min(settle, max(0, total - win))
+        last_start = max(start0, total - tail - win)
+        hopspan = min(max(0, last_start - start0), int(0.12 * SR))   # ≤120 ms spread → near-identical cuts
     outs = []
     for v in range(n_var):
-        frac = 0.0 if n_var <= 1 else v / (n_var - 1)
-        seg = tight_onset(body[int(start0 + frac * hopspan):][:win])
+        frac = 0.0 if n_var <= 1 or hopspan == 0 else v / (n_var - 1)
+        seg = body[int(start0 + frac * hopspan):][:win]
+        if not keep_attack:
+            seg = tight_onset(seg)                          # re-seat steady-state cuts on their transient
         if len(seg) < win:
             seg = np.pad(seg, ((0, win - len(seg)), (0, 0)))
         outs.append(short_fade_out(normalize(seg[:win])))
@@ -289,7 +313,7 @@ def fill_grid(by_pitch, lo=GRID_LO, hi=GRID_HI, step=GRID_STEP):
     return out
 
 
-def bake_voice(mrt, label, prompt, outdir, anchors=ANCHORS, grid=(GRID_LO, GRID_HI), n_var=VOICE_VARIATIONS):
+def bake_voice(mrt, label, prompt, outdir, anchors=ANCHORS, grid=(GRID_LO, GRID_HI), n_var=VOICE_VARIATIONS, keep_attack=False):
     """Render a voice → `n_var` sampler maps spanning the grid. Returns
     {prompt, variations:[{noteName: filename}, ...]}. `anchors`/`grid` let a low instrument
     (e.g. BASS) be sampled + covered in a lower register; `n_var=1` makes a single clean voice
@@ -308,7 +332,7 @@ def bake_voice(mrt, label, prompt, outdir, anchors=ANCHORS, grid=(GRID_LO, GRID_
         det, voiced = detect_midi(x, p)
         det = max(glo - 12, min(ghi + 12, det))
         flatv = tonal_flatness(x)
-        variations = cut_variations(x, n_var)
+        variations = cut_variations(x, n_var, keep_attack=keep_attack)
         flag = ""
         if voiced >= MIN_VOICED and flatv <= MAX_FLATNESS and voiced > best["voiced"]:
             best = {"voiced": voiced, "det": det, "vars": variations}
@@ -634,15 +658,15 @@ def main():
 
     if args.only in ("all", "voices"):
         manifest["voices"] = {
-            "harmony": bake_voice(mrt, "harmony", args.harmony, out, n_var=1),   # ONE clean chord voice
-            "lead": bake_voice(mrt, "lead", args.lead, out),
-            "bass": bake_voice(mrt, "bass", args.bass, out, anchors=BASS_ANCHORS, grid=BASS_GRID),
+            "harmony": bake_voice(mrt, "harmony", args.harmony, out, n_var=1),   # ONE clean chord voice (no attack → no chord mud)
+            "lead": bake_voice(mrt, "lead", args.lead, out, keep_attack=True),    # keep the attack → recognizable lead
+            "bass": bake_voice(mrt, "bass", args.bass, out, anchors=BASS_ANCHORS, grid=BASS_GRID, keep_attack=True),
         }
     elif args.only == "harmony":   # add/refresh just the chord voice (one clean variation)
         manifest["voices"]["harmony"] = bake_voice(mrt, "harmony", args.harmony, out, n_var=1)
     elif args.only == "bass":      # add/refresh just the bass, keeping existing harmony+lead
         manifest["voices"]["bass"] = bake_voice(mrt, "bass", args.bass, out,
-                                                anchors=BASS_ANCHORS, grid=BASS_GRID)
+                                                anchors=BASS_ANCHORS, grid=BASS_GRID, keep_attack=True)
     if args.only in ("all", "drums"):
         manifest["drums"] = bake_drums(mrt, args.drums, out, debug=args.debug)
 

@@ -23,6 +23,7 @@ class TextureDSP:
     carried across chunks to avoid clicks at boundaries."""
     def __init__(self, sr=48000, cutoff=1300.0, gain=0.5):
         self.gain = gain
+        self.target_gain = gain      # lead mode lifts this; process() ramps to it click-free
         self.sos = signal.butter(4, cutoff / (sr / 2), btype="low", output="sos")
         zi = signal.sosfilt_zi(self.sos)
         self.zi_l, self.zi_r = zi.copy(), zi.copy()
@@ -30,6 +31,9 @@ class TextureDSP:
         self.bg, self.ag = signal.butter(1, 120.0 / (sr / 2), btype="low")     # gain smoother
         self.zi_env = signal.lfilter_zi(self.benv, self.aenv) * 0.05
         self.zi_g = signal.lfilter_zi(self.bg, self.ag)
+
+    def set_gain(self, target):
+        self.target_gain = float(target)
 
     def process(self, x):
         l, self.zi_l = signal.sosfilt(self.sos, x[:, 0], zi=self.zi_l)
@@ -39,7 +43,9 @@ class TextureDSP:
         avg, self.zi_env = signal.lfilter(self.benv, self.aenv, peak, zi=self.zi_env)
         g = np.minimum(1.0, (avg + 0.03) / (peak + 0.03))                       # duck transients
         g, self.zi_g = signal.lfilter(self.bg, self.ag, g, zi=self.zi_g)        # smooth to avoid distortion
-        return (y * g[:, None] * self.gain).astype(np.float32)
+        gains = np.linspace(self.gain, self.target_gain, y.shape[0], dtype=np.float32)  # ramp → no click
+        self.gain = self.target_gain
+        return (y * g[:, None] * gains[:, None]).astype(np.float32)
 
 # ---------------- chord -> MRT2 notes vector ----------------
 SHARP = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
@@ -70,12 +76,20 @@ class Params:
         self.taste = ["warm ambient pads", "cinematic texture"]
         self.energy = 0.0
         self._chord_changed = True   # force an onset on first/changed chord
+        self.lead_active = False     # the lead synth has started → texture wakes to it
+        self.lead_pitches = []       # the lead loop's live MIDI (fed in sustained, non-rhythmic)
+        self.lead_prompt = ""        # lead voice timbre → "conscious of the synth" style
+        self.phase = "lobby"         # MUTED until "jam" — the host plays the lobby track during onboarding
 
     def update_from_state(self, st):
         with self.lock:
-            self.key = st.get("key", self.key)
+            self.phase = st.get("phase", self.phase)
+            self.key = st.get("key") or self.key      # key can be null (blank) pre-jam → keep last valid
             self.energy = st.get("energy", self.energy)
             self.taste = st.get("taste", self.taste)
+            self.lead_active = bool(st.get("leadActive", self.lead_active))
+            self.lead_pitches = list(st.get("leadPitches", self.lead_pitches))
+            self.lead_prompt = st.get("leadPrompt", self.lead_prompt)
             d = st.get("chord", self.degree)
             if d != self.degree:
                 self.degree = d
@@ -85,7 +99,12 @@ class Params:
         with self.lock:
             onset = self._chord_changed
             self._chord_changed = False
-            return self.key, self.degree, list(self.taste), self.energy, onset
+            return (self.key, self.degree, list(self.taste), self.energy, onset,
+                    self.lead_active, list(self.lead_pitches), self.lead_prompt)
+
+    def playing(self):               # generate texture only during the jam (muted in the lobby)
+        with self.lock:
+            return self.phase == "jam"
 
 # ---------------- main ----------------
 def main():
@@ -115,16 +134,32 @@ def main():
     # A/B-tested offline via engine/sweep_prompts.py.
     ANCHOR_PROMPT = ("ambient sustained synth pads, atmospheric drone, shimmering "
                      "reverb wash, beatless, free time, textural ambience")
-    ANCHOR_WEIGHT = 0.4
-    _emb_cache = {}
-    _anchor = mrt.embed_style(ANCHOR_PROMPT)
-    def style_for(taste):
-        key = tuple(taste)
-        if key not in _emb_cache:
-            embs = [mrt.embed_style(p) for p in taste] or [_anchor]
-            taste_emb = sum(embs) / len(embs)         # taste fusion (equal-weight blend)
-            _emb_cache[key] = (1 - ANCHOR_WEIGHT) * taste_emb + ANCHOR_WEIGHT * _anchor
-        return _emb_cache[key]
+    # The bed has TWO modes (it is always off-grid / beatless — spec §6):
+    #   AMBIENT (jam start, before any lead note) — "barely any instruments": anchor-
+    #     dominant so it's a formless atmospheric wash, the genre only faintly tinting it.
+    #   LEAD-CONSCIOUS (after the first lead note) — the anchor steps back so the genre
+    #     soundscape AND the lead's own timbre (lead_prompt) come through; the lead's live
+    #     MIDI is fed into the notes (generate_one) and cfg_notes rises, so the bed follows
+    #     and lifts the lead — without ever becoming rhythmic (all sustained, drums off).
+    # A/B these via engine/sweep_blend.py (anchor) and by ear at the mode switch.
+    AMBIENT_ANCHOR_WEIGHT = 0.72   # anchor-heavy → barely any instrument character
+    LEAD_ANCHOR_WEIGHT    = 0.30   # let the genre + lead timbre read
+    LEAD_PROMPT_WEIGHT    = 0.45   # how much the lead voice colors the style
+    _emb_text = {}
+    def embed(text):
+        if text not in _emb_text:
+            _emb_text[text] = mrt.embed_style(text)
+        return _emb_text[text]
+    _anchor = embed(ANCHOR_PROMPT)
+    def style_for(taste, lead_active, lead_prompt):
+        embs = [embed(p) for p in taste] if taste else [_anchor]
+        taste_emb = sum(embs) / len(embs)         # taste fusion (equal-weight blend)
+        if not lead_active:
+            return (1 - AMBIENT_ANCHOR_WEIGHT) * taste_emb + AMBIENT_ANCHOR_WEIGHT * _anchor
+        base = taste_emb
+        if lead_prompt:                           # fold the lead's timbre in → conscious of the synth
+            base = (1 - LEAD_PROMPT_WEIGHT) * taste_emb + LEAD_PROMPT_WEIGHT * embed(lead_prompt)
+        return (1 - LEAD_ANCHOR_WEIGHT) * base + LEAD_ANCHOR_WEIGHT * _anchor
 
     audio_q = queue.Queue(maxsize=6)
     stop = threading.Event()
@@ -133,16 +168,28 @@ def main():
 
     # MLX is thread-bound: generation MUST run on the thread that loaded the model
     # (the main thread). WS + the audio callback run on other threads and never touch MLX.
+    # Per-mode generation params. Lead mode commits harder to the (lead-tinted) style and
+    # tracks notes more so the lead reads — but cfg_drums stays high and everything is
+    # sustained, so the bed never turns rhythmic. Ambient mode is faint and formless.
+    AMBIENT_CFG_NOTES, LEAD_CFG_NOTES = 1.5, 3.0
+    AMBIENT_CFG_MC,    LEAD_CFG_MC    = 3.0, 4.0
+    AMBIENT_GAIN,      LEAD_GAIN      = 0.5, 0.6
     def generate_one():
-        key, degree, taste, energy, onset = params.snapshot()
-        style = style_for(taste)
+        key, degree, taste, energy, onset, lead_active, lead_pitches, lead_prompt = params.snapshot()
+        style = style_for(taste, lead_active, lead_prompt)
         notes = chord_notes_vec(key, degree, onset=onset)
+        if lead_active:
+            for p in lead_pitches:                      # feed the lead's live MIDI straight in,
+                p = int(p)                              # SUSTAINED (3) → present, not rhythmic
+                if 0 <= p < 128:
+                    notes[p] = 3
+        dsp.set_gain(LEAD_GAIN if lead_active else AMBIENT_GAIN)
         wav, gen_state["state"] = mrt.generate(
             style=style, notes=notes,
             drums=[0],                     # OFF: drums come from our deterministic engine. MRT2 is
             cfg_drums=6.0,                 # texture only — never a rhythmic line (spec §6 invariant).
-            cfg_notes=2.0,                 # LOW: texture tracks harmony, never states it (spec invariant)
-            cfg_musiccoca=3.0,
+            cfg_notes=LEAD_CFG_NOTES if lead_active else AMBIENT_CFG_NOTES,   # lead mode tracks the melody
+            cfg_musiccoca=LEAD_CFG_MC if lead_active else AMBIENT_CFG_MC,     # …and commits to the style
             temperature=1.1 + 0.5 * energy,  # crowd energy → more motion
             frames=25, state=gen_state["state"],
         )
@@ -151,7 +198,7 @@ def main():
             audio_q.put(samples, timeout=2.0)
         except queue.Full:
             pass
-        return degree, onset, energy, samples.shape
+        return degree, onset, energy, samples.shape, lead_active
 
     # ---- WS client (room state) ----
     def start_ws():
@@ -173,16 +220,21 @@ def main():
             ).run_forever(), daemon=True).start()
 
     if test:
-        # drive a chord change mid-stream to prove conditioning + onset handling (no audio device)
+        # drive a chord change AND the ambient→lead transition to prove conditioning (no audio device)
         t0 = time.time()
-        degree, onset, energy, shp = generate_one()
-        print(f"[texture] gen chord={degree} onset={onset} energy={energy:.2f} -> {shp}")
+        degree, onset, energy, shp, lead = generate_one()                     # ambient mode (no lead yet)
+        print(f"[texture] gen chord={degree} onset={onset} energy={energy:.2f} lead={lead} -> {shp}")
         params.update_from_state({"key": "A", "chord": "IV", "energy": 0.5})  # re-root + energy up
-        for _ in range(2):
-            degree, onset, energy, shp = generate_one()
-            print(f"[texture] gen chord={degree} onset={onset} energy={energy:.2f} -> {shp}")
-        rtf = 3.0 / (time.time() - t0)
-        print(f"[texture] TEST OK — {audio_q.qsize()} chunks queued, re-root onset fired, ~{rtf:.2f}x RTF.")
+        degree, onset, energy, shp, lead = generate_one()
+        print(f"[texture] gen chord={degree} onset={onset} energy={energy:.2f} lead={lead} -> {shp}")
+        # first lead note plays → texture wakes to the lead and its live MIDI feeds in
+        params.update_from_state({"leadActive": True, "leadPitches": [76, 79, 83],
+                                  "leadPrompt": "muted jazz trumpet, breathy expressive"})
+        degree, onset, energy, shp, lead = generate_one()                     # lead-conscious mode
+        print(f"[texture] gen chord={degree} onset={onset} energy={energy:.2f} lead={lead} -> {shp}")
+        assert lead is True, "lead mode did not engage after leadActive"
+        rtf = 4.0 / (time.time() - t0)
+        print(f"[texture] TEST OK — {audio_q.qsize()} chunks queued, re-root onset + lead-wake fired, ~{rtf:.2f}x RTF.")
         return
 
     start_ws()
@@ -201,15 +253,18 @@ def main():
         outdata[:] = buf[:frames]
         leftover["buf"] = buf[frames:]
 
-    # prime a couple chunks before opening the stream so the start is gapless
-    print("[texture] priming…")
-    generate_one(); generate_one()
-    print("[texture] streaming to default output — Ctrl-C to stop")
+    # Magenta is MUTED during onboarding/lobby — the host plays the lobby track instead. The model
+    # stays loaded/warm but we generate nothing until the jam starts (the callback outputs silence),
+    # so the texture comes in cleanly the moment the host hits START.
+    print("[texture] streaming to default output (muted until jam start) — Ctrl-C to stop")
     with sd.OutputStream(samplerate=48000, channels=2, dtype="float32",
                          blocksize=1024, callback=callback):
         try:
             while not stop.is_set():
-                generate_one()   # keep the queue full on the main (MLX) thread
+                if params.playing():
+                    generate_one()   # jam → keep the queue full on the main (MLX) thread
+                else:
+                    time.sleep(0.1)  # lobby → idle; the queue drains and the output is silent
         except KeyboardInterrupt:
             stop.set()
 
