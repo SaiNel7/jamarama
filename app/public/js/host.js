@@ -1,7 +1,7 @@
 // Host = lobby + console. Owns the master clock (Tone.js), the groove-driven drum
 // engine + harmony synth, and renders the live room view from broadcast state.
 import { Bus, romanToName, chordMidi, chordNotes, diatonic, scaleNotes, parentRoot } from "/js/shared.js";
-import { LeadBrain } from "/js/brain/lead.js";
+import { LeadBrain, leadFeel } from "/js/brain/lead.js";
 import { HarmonyBrain } from "/js/brain/harmony.js";
 import { grooveStep, FEEL_SWING, bassStep } from "/js/brain/groove.js";
 import { midiName, snap, keyRoot, MAJOR, MINOR } from "/js/brain/theory.js";
@@ -459,13 +459,26 @@ const midiOf = (p) => 12 * ((p.oct ?? 5) + 1) + NOTE_PC.indexOf(p.note);
 // audio. Recording on this = notes land on the step the player actually heard → in time.
 const nowStep = () => { const p = Tone.getTransport().position.split(":"); return Math.round((+p[0]) * 16 + (+p[1]) * 4 + (+p[2])); };
 
-// Wildness → transform params. At 0 it's a faithful loop (no variation).
+// Wildness → transform params. At 0 it's a faithful loop (exactly what the player played). Up to
+// ~0.85 it stays call-&-response (your phrase returns every other loop = reactive); only past that
+// does it develop every loop. harmonize only colours DEVELOPMENTS — the faithful call is untouched.
 function leadParams() {
   const w = leadWild;
+  const f = leadFeel(st?.feel);                     // genre phrasing — shapes HOW developments move
+  const cl = (v) => clamp(v, -1, 1);
   return {
-    responseEvery: w > 0.02 ? 1 : 0,             // 0 = faithful; 1 = vary every loop
-    retro: 0.55 * w, shift: 0.5 * w, density: 0.5 * w,
-    invert: 0.6 * w, harmonize: 0.4,
+    // how often the player's EXACT phrase returns scales with wildness: ~0 faithful always,
+    // low → only 1-in-4 loops vary (mostly your phrase), mid → call/response, high → develop every loop.
+    responseEvery: w < 0.02 ? 0 : w < 0.33 ? 4 : w < 0.7 ? 2 : 1,
+    // genre biases the development knobs (jazz ornaments, funk syncopates, ambient thins, …).
+    retro: cl(0.5 * w * f.retro),
+    shift: cl(0.5 * w * f.shift + (f.shiftBase || 0)),
+    density: cl(0.4 * w * f.density + (f.densityBase || 0)),
+    invert: cl(0.5 * w * f.invert),
+    harmonize: 0.4, wild: w,
+    // ...and within developments, low wildness re-anchors to the phrase often (stays recognizable);
+    // high re-anchors rarely; past ~0.92 never (free evolution).
+    reAnchor: w > 0.92 ? Infinity : Math.max(2, Math.round(2 + w * 6)),
   };
 }
 function leadSetState(s) { leadState = s; setText("leadloopstate", s); }
@@ -485,6 +498,14 @@ function leadGenerate() {
   leadBrain.setPhrase(recLoop);
   leadBrain.setKey(st?.key || "A", st?.scale || "major");
   leadBrain.setChord(chordMidi(st?.key || "A", st?.chord || "I", 4, st?.scale));
+  // Per-beat chord schedule so the lead solos OVER the changes, not over one chord for the loop.
+  const sched = effectiveSchedule();
+  leadBrain.setChordSchedule(sched && sched.length
+    ? sched.map((slot) => {
+        const m = (slot.notes && slot.notes.length) ? slot.notes : chordMidi(st?.key || "A", slot.roman || "I", 4, st?.scale);
+        return [...new Set(m.map((x) => ((x % 12) + 12) % 12))];
+      })
+    : null);
   const gen = recLoop.length ? leadBrain.generate(leadLoopIdx++, leadParams()) : [];
   // Hard guarantee in-key: snap every note to the song scale. Catches chromatic artifacts from
   // harmonize's fractional move and any out-of-key input.

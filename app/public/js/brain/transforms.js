@@ -63,16 +63,21 @@ export function transposeDia(notes, steps, root, scale) {
   return notes.map((n) => ({ ...n, p: degToPitch(pitchToDeg(n.p, root, scale) + steps, root, scale) }));
 }
 
-// Pull strong-beat notes toward the nearest current chord tone (consonance lock).
-export function harmonizeToChord(notes, frac, chordPCs, root, scale) {
-  if (frac <= 0 || !chordPCs?.length) return clone(notes);
+// Snap strong-beat notes onto the chord active at THAT beat, so the line follows the changes
+// (soloing over the progression). `chord` is either a fixed pitch-class array or a function
+// chord(t) → pitch classes for step t. Snaps fully to the nearest chord tone (which is in-key),
+// so no out-of-key artifacts. `frac` is an on/off gate (>0 = follow). Off-beats stay as passing tones.
+export function harmonizeToChord(notes, frac, chord, root, scale) {
+  if (frac <= 0) return clone(notes);
   return notes.map((n) => {
     if (n.t % STEPS_PER_BEAT !== 0) return { ...n };           // only strong beats
+    const pcs = typeof chord === "function" ? chord(n.t) : chord;
+    if (!pcs || !pcs.length) return { ...n };
     let best = n.p, bd = 99;
     for (let off = -6; off <= 6; off++) {
-      if (chordPCs.includes((((n.p + off) % 12) + 12) % 12) && Math.abs(off) < bd) { bd = Math.abs(off); best = n.p + off; }
+      if (pcs.includes((((n.p + off) % 12) + 12) % 12) && Math.abs(off) < bd) { bd = Math.abs(off); best = n.p + off; }
     }
-    return { ...n, p: Math.round(n.p + frac * (best - n.p)) };
+    return { ...n, p: best };                                  // full snap → nearest current chord tone
   });
 }
 
