@@ -4,7 +4,7 @@ import { Bus, romanToName, chordMidi, chordNotes, diatonic, scaleNotes, parentRo
 import { LeadBrain, leadFeel } from "/js/brain/lead.js";
 import { HarmonyBrain } from "/js/brain/harmony.js";
 import { grooveStep, FEEL_SWING, bassStep } from "/js/brain/groove.js";
-import { midiName, snap, keyRoot, MAJOR, MINOR } from "/js/brain/theory.js";
+import { midiName, snap, keyRoot, scaleSteps } from "/js/brain/theory.js";
 import { loadVoices } from "/js/voices.js";
 import { NotationView } from "/js/notation.js";
 import { HostRecorder } from "/js/record.js";
@@ -509,7 +509,7 @@ function leadGenerate() {
   const gen = recLoop.length ? leadBrain.generate(leadLoopIdx++, leadParams()) : [];
   // Hard guarantee in-key: snap every note to the song scale. Catches chromatic artifacts from
   // harmonize's fractional move and any out-of-key input.
-  const root = keyRoot(st?.key || "A"), scale = (st?.scale === "minor") ? MINOR : MAJOR;
+  const root = keyRoot(st?.key || "A"), scale = scaleSteps(st?.scale);
   playLoop = gen.map((n) => ({ ...n, p: snap(n.p, root, scale) }));
 }
 function leadCloseLoop() {                         // lock the loop to the readout window (4 bars)
@@ -557,7 +557,9 @@ function leadRecordNote(p, latMs = 0) {
 // Clock tick (every 16th, with the precise audio `time`): auto-lock, sweep playhead, play loop.
 function leadTick(time) {
   // auto-lock ~1 bar after the player stops → it loops without any button (length = what was played)
-  if (leadState === "recording" && recLoop.length && (s16 - lastNoteStep) >= AUTO_LOCK) leadCloseLoop();
+  // auto-lock uses the SAME (real-time) clock that stamped lastNoteStep, so it fires after a true
+  // bar of silence (not ~1 step early as it did when comparing the look-ahead s16 to a nowStep value).
+  if (leadState === "recording" && recLoop.length && (nowStep() - lastNoteStep) >= AUTO_LOCK) leadCloseLoop();
   if (leadState !== "looping" || !loopLen) return;
   const ph = (((s16 - loopStart) % loopLen) + loopLen) % loopLen;
   // Loop boundary: fresh variation → middle readout, and feed the GENERATED lead MIDI to the

@@ -6,6 +6,17 @@
 
 export const MAJOR = [0, 2, 4, 5, 7, 9, 11];
 export const MINOR = [0, 2, 3, 5, 7, 8, 10];
+// Scale-degree interval sets for every offered mode (semitones from the tonic). Melody/snap use
+// these so a dorian/lydian/pentatonic jam stays in its actual mode, not forced to major/minor.
+// (Mirrors the steps in shared.js MODES, which also carries the parent-major offset for CHORDS.)
+export const SCALES = {
+  major: MAJOR, ionian: MAJOR, minor: MINOR, aeolian: MINOR,
+  dorian: [0, 2, 3, 5, 7, 9, 10], phrygian: [0, 1, 3, 5, 7, 8, 10],
+  lydian: [0, 2, 4, 6, 7, 9, 11], mixolydian: [0, 2, 4, 5, 7, 9, 10],
+  locrian: [0, 1, 3, 5, 6, 8, 10], pentatonic: [0, 2, 4, 7, 9],
+  chromatic: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+};
+export const scaleSteps = (name) => SCALES[name] || MAJOR;
 export const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
 export const STEPS_PER_BAR = 16;          // 16th-note grid
 export const STEPS_PER_BEAT = 4;

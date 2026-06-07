@@ -1,8 +1,8 @@
 // LeadBrain — captures a played phrase, quantizes it to the grid, loops it, and
 // generates parameter-mapped variations each loop. Rhythmic transforms are the
 // headline; pitch (melodic) inversion is fractional. All knobs are mappable.
-import { MAJOR, MINOR, keyRoot, pitchToDeg, quantize, clone, rng, STEPS_PER_BAR } from "./theory.js";
-import { rotate, retrograde, thin, ornament, diatonicInvert, transposeDia, harmonizeToChord, fitLen } from "./transforms.js";
+import { scaleSteps, keyRoot, pitchToDeg, quantize, clone, rng, STEPS_PER_BAR } from "./theory.js";
+import { rotate, retrograde, thin, ornament, diatonicInvert, transposeDia, harmonizeToChord, fitLen, dynamics } from "./transforms.js";
 
 export const LEAD_DEFAULTS = {
   responseEvery: 2,   // 0 = never vary (pure loop); 1 = vary every loop; 2 = call, response, call…
@@ -46,7 +46,7 @@ export class LeadBrain {
     this.chordPCs = [];      // fallback chord pitch-classes (whole loop, when no schedule)
     this.chordSched = null;  // per-BEAT chord pitch-classes [[pc,…], …] → follow the changes
   }
-  setKey(key, scale) { this.root = keyRoot(key); this.scale = scale === "minor" ? MINOR : MAJOR; }
+  setKey(key, scale) { this.root = keyRoot(key); this.scale = scaleSteps(scale); }
   setChord(midiNotes) { this.chordPCs = (midiNotes || []).map((m) => ((m % 12) + 12) % 12); }
   // Per-beat chord schedule (array of pitch-class arrays, one per beat) so harmonize follows the
   // progression across the loop. Pass null to fall back to the single setChord().
@@ -76,10 +76,13 @@ export class LeadBrain {
     const isResponse = p.responseEvery > 0 && (p.responseEvery === 1 || (loop % p.responseEvery) === p.responseEvery - 1);
     let n = isResponse ? this.develop(p) : clone(this.phrase);
 
-    // Consonance lock only on developments — the faithful call stays exactly as the player played it.
+    // Consonance lock only on developments — the faithful call keeps the player's pitches & timing.
     // Strong beats snap to the chord active at THAT beat (chordAt) → the line solos over the changes.
     if (isResponse && p.harmonize > 0) n = harmonizeToChord(n, p.harmonize, (t) => this.chordAt(t), this.root, this.scale);
-    return fitLen(n, this.len).sort((a, b) => a.t - b.t);
+    // Dynamics contour (velocity only — pitches/timing preserved), seeded per loop for humanization.
+    const rd = rng(((loop + 1) * 2246822519) >>> 0 || 1); rd();
+    n = dynamics(fitLen(n, this.len), this.len, rd);
+    return n.sort((a, b) => a.t - b.t);
   }
 
   // One development step: grow the CURRENT motif (not the original) by small, seeded operators, so

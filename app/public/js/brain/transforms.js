@@ -83,3 +83,20 @@ export function harmonizeToChord(notes, frac, chord, root, scale) {
 
 // Keep notes inside the loop window (clip any pushed past the end).
 export const fitLen = (notes, len) => notes.filter((n) => n.t >= 0 && n.t < len).map((n) => ({ ...n, d: clamp(n.d, 1, len - n.t) }));
+
+// Velocity/dynamics contour: accent bar-downbeats, then beats; soften off-beats and ornaments;
+// a gentle phrase arc (swell toward the middle); plus light humanization. Shapes only velocity, so
+// the player's pitches and timing are untouched — it just gives the flat phone input human dynamics.
+export function dynamics(notes, len, rand = Math.random) {
+  return notes.map((n) => {
+    const beatPos = n.t % STEPS_PER_BEAT;
+    let v = 0.78;
+    if (n.t % (STEPS_PER_BEAT * 4) === 0) v += 0.16;      // bar downbeat — strongest
+    else if (beatPos === 0) v += 0.08;                     // on the beat
+    else v -= 0.04;                                        // off-beat — lighter
+    v += 0.07 * Math.sin(Math.PI * (n.t / Math.max(1, len)));  // phrase arc (swell then ease)
+    if ((n.v ?? 0.9) < 0.7) v -= 0.12;                     // keep ornaments/grace notes soft
+    v += (rand() - 0.5) * 0.06;                            // humanize
+    return { ...n, v: clamp(v, 0.35, 1) };
+  });
+}
