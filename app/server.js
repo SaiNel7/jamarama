@@ -309,7 +309,10 @@ wss.on("connection", (ws, req) => {
           const players = roster().filter((p) => p.role !== "groove");
           console.log(`  [lobby] host started the jam (${players.filter((p) => p.ready).length}/${players.length} players ready)`);
           recomputeTaste();                                        // async; broadcasts again when transforms land
-          prebakeFromTastes();                                     // async; `voices` broadcast when the bake lands
+          // async; `voices` broadcast when the bake lands. NO_PREBAKE=1 keeps the
+          // built-in synths all jam (A/B the baked voices, or save GPU on weak hosts).
+          if (!process.env.NO_PREBAKE) prebakeFromTastes();
+          else console.log("  [prebake] disabled (NO_PREBAKE=1) — built-in synths all jam");
         }
         broadcastState();
         break;
