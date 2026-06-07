@@ -1,11 +1,12 @@
 // Host = lobby + console. Owns the master clock (Tone.js), the groove-driven drum
 // engine + harmony synth, and renders the live room view from broadcast state.
-import { Bus, romanToName, chordMidi, chordNotes, diatonic } from "/js/shared.js";
+import { Bus, romanToName, chordMidi, chordNotes, diatonic, scaleNotes } from "/js/shared.js";
 import { LeadBrain } from "/js/brain/lead.js";
 import { HarmonyBrain } from "/js/brain/harmony.js";
 import { midiName, snap, keyRoot, MAJOR, MINOR } from "/js/brain/theory.js";
 import { loadVoices } from "/js/voices.js";
 import { NotationView } from "/js/notation.js";
+import { HostRecorder } from "/js/record.js";
 const Tone = window.Tone;
 
 const bus = new Bus("host");
@@ -32,7 +33,8 @@ bus.on("voices", () => { if (started) applyPrebakedVoices(); });
 // ---- join info ----
 // While the server's cloudflared tunnel is coming up, show a "creating link…"
 // state — never flash the LAN address. The final URL (tunnel, or LAN only if the
-// tunnel can't start) is the first thing ever displayed.
+// tunnel can't start) is the first thing ever displayed. Also feeds the console's
+// audience join QR (#qr2) once the link is final.
 async function refreshInfo() {
   try {
     const info = await (await fetch("/info")).json();
@@ -45,6 +47,8 @@ async function refreshInfo() {
     document.getElementById("qr").src = info.qr;
     document.getElementById("qr").style.visibility = "visible";
     document.getElementById("joinurl").textContent = info.joinUrl;
+    const q2 = document.getElementById("qr2");           // audience join QR on the console
+    if (q2) q2.src = info.qr;
   } catch { setTimeout(refreshInfo, 1200); }
 }
 refreshInfo();
@@ -52,15 +56,44 @@ refreshInfo();
 // =================================================================== AUDIO ENGINE
 // Synths are created lazily inside startAudio (after the user gesture / Tone.start),
 // so a bad option can't break module load and silently kill the start button.
-let kick, snare, hat, chordSynth, leadSynth;
+let kick, snare, hat, chordSynth, leadSynth, bassSynth;
+let drumKit = null;                                 // MRT2 auto-chopped sample kit (null → built-in synths)
+let masterBus, drumBus, harmonyBus, leadBus, bassBus;   // record/export buses (per-stem → master → speakers)
+let bedDuck = null;                                 // sidechain: harmony+bass bed, ducked by kick/snare
+const recorder = new HostRecorder();
 let bar = 0, progIdx = -1, s16 = 0;
 const groove = { x: 0.5, y: 0.5 };   // X = sparse↔dense, Y = chill↔hype
 
 function initSynths() {
-  kick = new Tone.MembraneSynth({ octaves: 6, pitchDecay: 0.05, volume: -2 }).toDestination();
-  snare = new Tone.NoiseSynth({ envelope: { attack: 0.001, decay: 0.12, sustain: 0 }, volume: -16 }).toDestination();
-  hat = new Tone.NoiseSynth({ envelope: { attack: 0.001, decay: 0.03, sustain: 0 }, volume: -24 }).toDestination();
-  const verb = new Tone.Reverb({ decay: 2.4, wet: 0.28 }).toDestination();
+  // Routing: each voice → its stem bus → master bus → speakers; the recorder taps all four buses,
+  // so export captures ONLY the host's generative band (drums/harmony/lead). Phone-local taps never
+  // enter this graph, so they're naturally excluded from every export.
+  // Master chain: stems → masterBus → brickwall limiter → speakers. The limiter is a hard safety net
+  // so the summed band can NEVER clip the output (clipping a low-heavy mix is what read as harsh noise).
+  masterBus = new Tone.Gain(0.7);                       // master trim so the limiter is never slammed
+  masterBus.chain(new Tone.Limiter(-1), Tone.getDestination());
+  // Sidechain bed: harmony + bass route through bedDuck, which is dipped on every kick/snare so the
+  // sustained instruments "pump" under the drums (kick/bass stop fighting in the low end, snare cuts
+  // through). Lead and drums bypass the duck — the melody stays steady and the drums DRIVE the duck.
+  bedDuck = new Tone.Gain(1).connect(masterBus);
+  // Per-stem EQ so each instrument owns its band. The decisive one: harmony LOW-PASS at 3.2 kHz —
+  // ~70% of the raw pad energy was >3 kHz noise/hash (flatness ~0.7), the "noise in the chords."
+  const eq = (...stages) => { const n = stages.map((s) => new Tone.Filter(s)); for (let i=0;i<n.length-1;i++) n[i].connect(n[i+1]); return n; };
+  const HP = (f, rolloff=-12) => ({ type: "highpass", frequency: f, rolloff });
+  const LP = (f, rolloff=-24) => ({ type: "lowpass", frequency: f, rolloff });
+  const wire = (busGain, dest, stages) => {            // busGain (stem tap) → EQ chain → dest
+    const n = eq(...stages); busGain.connect(n[0]); n[n.length-1].connect(dest); return busGain;
+  };
+  drumBus    = wire(new Tone.Gain(1.2), masterBus, [HP(35)]);                  // drums forward + loud (limiter guards)
+  harmonyBus = wire(new Tone.Gain(),    bedDuck,   [HP(150), LP(3200, -24)]);  // warm pad, kill >3k noise
+  bassBus    = wire(new Tone.Gain(),    bedDuck,   [HP(35),  LP(2500)]);       // round low end, no fizz
+  leadBus    = wire(new Tone.Gain(),    masterBus, [HP(220), LP(9000)]);       // present mids, not ducked
+  recorder.attach({ master: masterBus, drums: drumBus, harmony: harmonyBus, lead: leadBus, bass: bassBus });
+
+  kick = new Tone.MembraneSynth({ octaves: 6, pitchDecay: 0.05, volume: -2 }).connect(drumBus);
+  snare = new Tone.NoiseSynth({ envelope: { attack: 0.001, decay: 0.12, sustain: 0 }, volume: -16 }).connect(drumBus);
+  hat = new Tone.NoiseSynth({ envelope: { attack: 0.001, decay: 0.03, sustain: 0 }, volume: -24 }).connect(drumBus);
+  const verb = new Tone.Reverb({ decay: 2.4, wet: 0.28 }).connect(harmonyBus);
   chordSynth = new Tone.PolySynth(Tone.Synth, {
     oscillator: { type: "fatsawtooth", count: 2, spread: 16 },
     envelope: { attack: 0.03, decay: 0.4, sustain: 0.5, release: 0.5 }, volume: -13,
@@ -68,7 +101,7 @@ function initSynths() {
   // LEAD voice — the melody, sits on top but balanced with the band. Bright mono synth
   // through a touch of delay/reverb (their dry passthrough carries the body, so one path —
   // no separate dry connect that would double the level).
-  const leadFx = new Tone.Reverb({ decay: 1.6, wet: 0.18 }).toDestination();
+  const leadFx = new Tone.Reverb({ decay: 1.6, wet: 0.18 }).connect(leadBus);
   const leadEcho = new Tone.FeedbackDelay({ delayTime: "8n.", feedback: 0.18, wet: 0.15 }).connect(leadFx);
   leadSynth = new Tone.MonoSynth({
     oscillator: { type: "sawtooth" },
@@ -76,27 +109,40 @@ function initSynths() {
     filterEnvelope: { attack: 0.005, decay: 0.12, sustain: 0.6, baseFrequency: 600, octaves: 3 },
     volume: -8,
   }).connect(leadEcho);
+  // BASS voice — generative, host-owned, NO player controls it: it just locks to the harmony and
+  // plays chord tones (root/fifth), always monophonic. Fallback mono synth = round sub (sine +
+  // gentle lowpass); swapped for the prebaked MRT2 bass sampler when a prebake exists.
+  bassSynth = new Tone.MonoSynth({
+    oscillator: { type: "sine" },
+    envelope: { attack: 0.008, decay: 0.18, sustain: 0.7, release: 0.18 },
+    filter: { type: "lowpass", Q: 1 },
+    filterEnvelope: { attack: 0.008, decay: 0.12, sustain: 0.5, baseFrequency: 110, octaves: 2.2 },
+    volume: -9,
+  }).connect(bassBus);
 }
 
-// If the user's taste was pre-baked into MRT2 voices, swap the built-in chord/lead synths for
-// the prompt-shaped Tone.Samplers (identical triggerAttackRelease API, so the brain/clock code
-// is untouched). Pure drop-in; silently keeps the synths when there's no prebake. Zero runtime
-// neural cost — these are sampled one-shots, the brain still chooses the notes.
+// If the user's taste was pre-baked, swap the built-in chord/lead synths for the prompt-shaped
+// MultiSamplers (identical triggerAttackRelease API, so the brain/clock code is untouched) and
+// install the MRT2-chopped drum kit. Pure drop-in; silently keeps the synths/synth-drums when
+// there's no prebake. Zero runtime neural cost — these are sampled one-shots, the brain still
+// chooses the notes/hits.
 async function applyPrebakedVoices() {
   let v = null;
   try { v = await loadVoices("/voices/"); } catch { /* no prebake → keep synths */ }
-  if (!v || !v.samplers) return;
-  const swap = (cur, sampler, vol) => {
-    if (!sampler) return cur;
-    sampler.volume.value = vol;
-    sampler.toDestination();
+  if (!v) return;
+  const swap = (cur, node, vol, bus) => {
+    if (!node) return cur;
+    node.volume.value = vol;
+    node.connect(bus || Tone.getDestination());      // route to the stem bus so exports capture it
     try { cur?.dispose?.(); } catch {}
-    return sampler;
+    return node;
   };
-  chordSynth = swap(chordSynth, v.samplers.harmony, -12);   // harmony voice
-  leadSynth  = swap(leadSynth,  v.samplers.lead,    -8);    // lead voice (matches prior balance)
-  const loaded = ["harmony", "lead"].filter((n) => v.samplers[n]);
-  if (loaded.length) console.log(`[voices] prompt-baked voices loaded: ${loaded.join(" + ")}`);
+  if (v.harmony) chordSynth = swap(chordSynth, v.harmony, -7, harmonyBus);    // harmony voice (present, under the drums)
+  if (v.lead)    leadSynth  = swap(leadSynth,  v.lead,    -9,  leadBus);       // lead voice
+  if (v.bass)    bassSynth  = swap(bassSynth,  v.bass,    -13, bassBus);       // bass voice — sits below the loud drums
+  if (v.drums)   drumKit    = v.drums.connect(drumBus);                       // sampled kit → drum stem
+  const loaded = [v.harmony && "harmony", v.lead && "lead", v.bass && "bass", v.drums && "drums"].filter(Boolean);
+  if (loaded.length) console.log(`[voices] prompt-baked instruments loaded: ${loaded.join(" + ")}`);
 }
 
 let started = false;
@@ -123,6 +169,7 @@ async function startAudio() {
     t.scheduleRepeat(onSixteenth, "16n");
     t.start();
     applyPrebakedVoices();                    // swap in MRT2 prompt-baked voices if a prebake exists
+    startWaves();                             // background waves now driven by the REAL master output
   } catch (e) {
     console.error("audio start failed:", e);
     note("AUDIO OFF — " + (e?.message || e) + " · free the output device, then reload");
@@ -159,24 +206,44 @@ function note(msg) {
   el.textContent = msg;
 }
 
+// Sidechain duck: dip the harmony+bass bed on a kick/snare hit, then recover — synced exactly to the
+// scheduled hit `time` (we know it precisely), so it pumps cleanly without an audio-driven detector.
+function duckBed(time, amount, rel) {
+  if (!bedDuck) return;
+  const g = bedDuck.gain;
+  g.cancelScheduledValues(time);
+  g.setValueAtTime(1.0, time);
+  g.linearRampToValueAtTime(amount, time + 0.006);   // fast dip (sidechain attack)
+  g.linearRampToValueAtTime(1.0, time + rel);         // release back up
+}
+
 function onSixteenth(time) {
   const sub = s16 % 16, beat = (sub / 4) | 0;
   leadTick(time);                               // tempo-synced lead looper (overdub + playback)
   harmonyTick(time);                            // generative harmony comp (brain-driven, room-shaped)
+  bassTick(time);                               // generative bass — chord-locked, mono (no player input)
   const { x, y } = groove;
   // --- drums driven by the groove X/Y ---
-  if (sub === 0 || (sub === 8 && y > 0.3)) kick.triggerAttackRelease("C1", "8n", time, 0.55 + 0.45 * y);
-  if ((sub === 4 || sub === 12) && y > 0.32) snare.triggerAttackRelease("16n", time, 0.5 + 0.5 * y);
+  // When a prebaked kit is present, fire its sampled one-shots (random variation per hit);
+  // otherwise fall back to the built-in synth drums. Same trigger schedule either way.
+  const kik = (t, v) => drumKit ? drumKit.hit("kick", t, v) : kick.triggerAttackRelease("C1", "8n", t, v);
+  const snr = (t, v) => drumKit ? drumKit.hit("snare", t, v) : snare.triggerAttackRelease("16n", t, v);
+  const hht = (t, v) => drumKit ? drumKit.hit("hat", t, v) : hat.triggerAttackRelease("32n", t, v);
+  if (sub === 0 || (sub === 8 && y > 0.3)) { const v = 0.55 + 0.45 * y; kik(time, v); duckBed(time, 0.5, 0.18); recorder.logNote("drums", "kick", 0.2, v, time); }
+  if ((sub === 4 || sub === 12) && y > 0.32) { const v = 0.5 + 0.5 * y; snr(time, v); duckBed(time, 0.7, 0.12); recorder.logNote("drums", "snare", 0.12, v, time); }
   const hatHit = x < 0.34 ? sub % 4 === 0 : x < 0.7 ? sub % 2 === 0 : true;
-  if (hatHit) hat.triggerAttackRelease("32n", time, 0.5 + 0.4 * y);
+  if (hatHit) { const v = 0.5 + 0.4 * y; hht(time, v); recorder.logNote("drums", "hat", 0.05, v, time); }
   // --- quarter-note events ---
   if (sub % 4 === 0) {
     if (beat === 0) bar = (Tone.getTransport().position.split(":")[0] | 0);
     bus.send({ type: "beat", bar, beat });
     Tone.getDraw().schedule(pulseHeartbeat, time);
   }
-  // one shared 16th-resolution position drives BOTH readouts so the playheads stay in lockstep
-  const rdStep = ((bar % BARS) * 16 + sub) % (BARS * 16);
+  // one shared 16th-resolution position drives BOTH readouts so the playheads stay in lockstep.
+  // Derived from the scheduler counter s16 — the SAME base as the lead loop phase (ph = (s16 -
+  // loopStart) % loopLen with loopStart aligned to this window) — so the readout, the lead audio,
+  // and the playhead are all in exact lockstep.
+  const rdStep = ((s16 % (BARS * 16)) + (BARS * 16)) % (BARS * 16);
   Tone.getDraw().schedule(() => { movePlayhead(rdStep); if (viewMode === "sheet") notation?.setPlayhead(rdStep); }, time);
   s16++;
 }
@@ -217,7 +284,7 @@ function harmonyTick(time) {
   }
   const sixteenth = Tone.Time("16n").toSeconds();
   if (chordSynth) for (const n of harmonyComp)
-    if (n.t === ph) chordSynth.triggerAttackRelease(midiName(n.p), Math.max(0.08, n.d * sixteenth), time, n.v ?? 0.8);
+    if (n.t === ph) { const dr = Math.max(0.08, n.d * sixteenth); chordSynth.triggerAttackRelease(midiName(n.p), dr, time, n.v ?? 0.8); recorder.logNote("harmony", n.p, dr, n.v ?? 0.8, time); }
   // chord-change → music-readout sync + state broadcast (checked on beats)
   if (s16 % 4 === 0) {
     const bi = (s16 / 4 | 0) % sched.length;
@@ -231,6 +298,28 @@ function harmonyTick(time) {
       Tone.getDraw().schedule(() => { renderRoll(); flashRoll(); }, time);
     }
   }
+}
+
+// =================================================================== BASS (generative, chord-locked)
+// The bass has NO player — it's purely generative from the harmony. On every beat it plays a CHORD
+// TONE (root on strong beats, fifth on weak beats) in a low register, always MONOPHONIC. Strict by
+// design: it only ever plays notes that are in the current chord, and never overlaps itself
+// (each note is shorter than a beat). It rides the same schedule the harmony/readout use.
+function bassTick(time) {
+  if (!bassSynth || s16 % 4 !== 0) return;            // one note per beat (quarter-note pulse)
+  const sched = effectiveSchedule();
+  const beatIdx = (s16 / 4) | 0;
+  const slot = sched[beatIdx % sched.length] || sched[0];
+  const chord = (slot.notes && slot.notes.length) ? slot.notes : chordMidi(st?.key || "A", slot.roman || "I", 4);
+  if (!chord.length) return;
+  const sorted = [...chord].sort((a, b) => a - b);
+  const rootPc = ((sorted[0] % 12) + 12) % 12;                       // chord root
+  const fifthPc = ((sorted[Math.min(2, sorted.length - 1)] % 12) + 12) % 12;   // chord fifth (or top tone)
+  const pc = (beatIdx % 2 === 0) ? rootPc : fifthPc;                 // root on strong beats, fifth on weak
+  const bassMidi = 36 + pc;                                          // C2..B2 — solid, audible bass register
+  const dr = Tone.Time("4n").toSeconds() * 0.9;                      // < one beat → naturally monophonic
+  bassSynth.triggerAttackRelease(midiName(bassMidi), dr, time, 0.9);
+  recorder.logNote("bass", bassMidi, dr, 0.9, time);
 }
 
 // =================================================================== LEAD LOOPER (host-owned)
@@ -271,7 +360,11 @@ function leadParams() {
 function leadSetState(s) { leadState = s; setText("leadloopstate", s); }
 function leadStartRec() {                          // begin defining a new loop
   recLoop = []; playLoop = []; leadLoopIdx = 0;
-  loopStart = Math.floor(nowStep() / SPB) * SPB;  // snap to the top of the current bar (real-time)
+  // Align the loop to the readout's WHOLE 4-bar window (not just the current bar) so the loop, the
+  // music readout, and the playhead all share ONE time base — the readout then shows exactly what
+  // the host plays, in lockstep with the playhead.
+  loopLen = BARS * SPB;                            // loop length == readout length
+  loopStart = Math.floor(nowStep() / loopLen) * loopLen;
   leadSetState("recording");
 }
 // Build the playback for this iteration (the wildness remix of the recording). Called on lock
@@ -287,10 +380,9 @@ function leadGenerate() {
   const root = keyRoot(st?.key || "A"), scale = (st?.scale === "minor") ? MINOR : MAJOR;
   playLoop = gen.map((n) => ({ ...n, p: snap(n.p, root, scale) }));
 }
-function leadCloseLoop() {                         // lock length to the recorded span (whole bars)
+function leadCloseLoop() {                         // lock the loop to the readout window (4 bars)
   if (leadState !== "recording") return;
-  const span = Math.max(0, lastNoteStep - loopStart);
-  loopLen = Math.max(SPB, Math.ceil((span + 1) / SPB) * SPB);
+  loopLen = BARS * SPB;                            // length == readout length (kept in sync)
   recLoop = recLoop.map((n) => ({ ...n, t: ((n.t % loopLen) + loopLen) % loopLen }));
   leadBrain.len = loopLen; leadLoopIdx = 0;
   leadSetState("looping");
@@ -319,7 +411,7 @@ function leadTick(time) {
   if (playLoop.length && leadSynth) {
     const sixteenth = Tone.Time("16n").toSeconds();
     for (const n of playLoop)
-      if (n.t === ph) leadSynth.triggerAttackRelease(midiName(n.p), Math.max(0.05, n.d * sixteenth), time, n.v ?? 0.9);
+      if (n.t === ph) { const dr = Math.max(0.05, n.d * sixteenth); leadSynth.triggerAttackRelease(midiName(n.p), dr, time, n.v ?? 0.9); recorder.logNote("lead", n.p, dr, n.v ?? 0.9, time); }
   }
   Tone.getDraw().schedule(() => moveLeadPlayhead(ph), time);   // sweep the visual playhead
 }
@@ -396,6 +488,7 @@ document.getElementById("lb-tempo-box").addEventListener("wheel", (e) => {
 function paintAll() {
   paintInfo(); paintRoster();
   if (document.getElementById("console").hidden) return;
+  if (leadKeysKey !== (st?.key || "A") + (st?.scale || "major")) buildLeadKeys();   // re-stick keys to a new key
   paintWheel(); paintPoll(); paintMix(); renderRoll(); paintLeadFromState();
 }
 function paintInfo() {
@@ -488,7 +581,40 @@ function buildConsole() {
   setupReadout();
   buildXY();
   buildLeadKeys();
+  wireExport();
   paintAll();
+}
+
+// Record/export panel (left). Record taps the host buses (drums+harmony+lead = generative only);
+// export produces full-mix audio, per-voice stems, a MIDI file from the note log, and the sheet.
+let recTimer = null;
+function wireExport() {
+  const btn = document.getElementById("recbtn"); if (!btn) return;
+  const xs = { audio: "x-audio", stems: "x-stems", midi: "x-midi", sheet: "x-sheet" };
+  const setExports = (on) => Object.values(xs).forEach((id) => { const e = document.getElementById(id); if (e) e.disabled = !on; });
+  const fmt = (s) => `${(s / 60) | 0}:${String((s | 0) % 60).padStart(2, "0")}`;
+
+  btn.onclick = async () => {
+    if (!recorder.recording) {
+      // Flip the UI FIRST so the button always responds — never left stuck on a slow/rejected start.
+      btn.classList.add("on"); btn.textContent = "■ STOP";
+      setExports(false); setText("rechint", "recording the generated set…");
+      const t0 = Tone.now();
+      recTimer = setInterval(() => setText("rectime", fmt(Tone.now() - t0)), 250);
+      try { await recorder.start(Tone.getTransport().bpm.value); }
+      catch (e) { console.error("record start failed:", e); setText("rechint", "record error: " + (e?.message || e)); }
+    } else {
+      clearInterval(recTimer); recTimer = null;
+      btn.classList.remove("on"); btn.textContent = "● RECORD"; setText("rechint", "saving take…");
+      try { await recorder.stop(); } catch (e) { console.error("record stop failed:", e); }
+      setExports(recorder.hasTake()); setText("rechint", recorder.hasTake() ? "take ready — export below" : "nothing captured — try again");
+    }
+  };
+  const on = (id, fn) => { const e = document.getElementById(id); if (e) e.onclick = fn; };
+  on(xs.audio, () => recorder.exportAudio());
+  on(xs.stems, () => recorder.exportStems());
+  on(xs.midi, () => recorder.exportMidi());
+  on(xs.sheet, async () => { const ok = await recorder.exportSheet({ key: st?.key, scale: st?.scale }); if (!ok) setText("rechint", "record a take first, then export sheet"); });
 }
 
 function buildWheel() { paintWheel(); }   // the wheel is fully (re)rendered from state each paint
@@ -533,13 +659,14 @@ function buildRoll() {
 function renderRoll() {
   const roll = document.getElementById("roll"); if (!roll || !roll.querySelector(".rrow")) return;
   roll.querySelectorAll(".note").forEach((n) => n.remove());
-  const prog = (st.progression?.length ? st.progression : ["I"]);
-  const rh = roll.clientHeight / ROWS.length, gw = (roll.clientWidth - LABELW) / BARS;
+  const rh = roll.clientHeight / ROWS.length;
   const pcOf = (m) => ((m % 12) + 12) % 12;
   const rowOf = (used, pcs, region) => { for (let i = 0; i < ROWS.length; i++) if (ROWS[i].region === region && pcs.includes(pcOf(ROWS[i].m)) && !used.has(i)) { used.add(i); return i; } return -1; };
-  // harmony: render the ACTUAL schedule — chord runs at their real (sub-bar) durations,
-  // voiced from the sent notes so any chord (incl. non-diatonic) shows correctly.
-  const sched = st.schedule;
+  // harmony: render the SAME schedule the audio plays (effectiveSchedule — drawn progression, or
+  // the default loop when no phone has drawn one) at FIXED beat positions. The chord blocks are
+  // static across the loop window; only the playhead moves. (Previously the no-schedule fallback
+  // rotated chords by progIdx every bar, so the blocks shifted out from under the playhead.)
+  const sched = effectiveSchedule();
   if (sched && sched.length) {
     const beatW = (roll.clientWidth - LABELW) / sched.length;     // one slot per beat
     for (let i = 0; i < sched.length;) {
@@ -551,14 +678,6 @@ function renderRoll() {
       pcs.forEach(() => { const ri = rowOf(used, pcs, "chord"); if (ri < 0) return;
         addNote(roll, "h", LABELW + i * beatW + 3, ri * rh + 4, run * beatW - 6, rh - 8, ""); });
       i += run;
-    }
-  } else {                                                         // fallback: per-bar (no schedule yet)
-    for (let b = 0; b < BARS; b++) {
-      const deg = prog[(progIdx + b) % prog.length] || "I";
-      const pcs = chordMidi(st.key, deg, 4).map((m) => m % 12);
-      const used = new Set();
-      pcs.forEach(() => { const ri = rowOf(used, pcs, "chord"); if (ri < 0) return;
-        addNote(roll, "h", LABELW + b * gw + 4, ri * rh + 4, gw - 8, rh - 8, ""); });
     }
   }
   // lead = the GENERATED loop (playLoop), in the upper (lead) rows, mapped across the readout
@@ -609,9 +728,15 @@ function buildXY() {
   dot.style.left = "50%"; dot.style.top = "50%";
 }
 
+let leadKeysKey = "";                              // last key/scale the lead keyboard was built for
 function buildLeadKeys() {
   const kb = document.getElementById("leadkeys"); if (!kb) return;
-  kb.innerHTML = ["C","D","E","F","G","A","B"].map((n) => `<div class="lk" data-note="${n}"><span class="d"></span></div>`).join("");
+  // Stuck to the song key: show ONLY the 7 in-key notes (white naturals + black accidentals),
+  // matching the phone's lead keyboard exactly (both from shared scaleNotes).
+  const notes = scaleNotes(st?.key || "A", st?.scale || "major");
+  leadKeysKey = (st?.key || "A") + (st?.scale || "major");
+  kb.innerHTML = notes.map((n) =>
+    `<div class="lk${n.black ? " blk" : ""}" data-note="${n.name}"><span class="kn">${n.name}</span><span class="d"></span></div>`).join("");
   // WILDNESS — host-owned remix amount for the lead loop playback.
   const ws = document.getElementById("leadwild");
   if (ws) { ws.value = Math.round(leadWild * 100); setText("leadwildval", ws.value + "%");
@@ -678,15 +803,106 @@ function pulseHeartbeat() {
   document.querySelectorAll(".rdot,.sq").forEach((d) => { d.classList.add("pulse"); setTimeout(() => d.classList.remove("pulse"), 110); });
 }
 
-// decorative sine waves
+// background waves — static placeholder before audio starts (see startWaves for the live version)
+const WAVE_COLS = ["#9B7BE6", "#5FD0A8", "#F4533A", "#F5B82E"];
+const WAVE_Y = [200, 330, 460, 590];
 function drawWaves() {
   const svg = document.getElementById("waves"); if (!svg) return;
-  const cols = ["#9B7BE6", "#5FD0A8", "#F4533A", "#F5B82E"];
-  svg.innerHTML = cols.map((c, i) => {
-    let d = `M0 ${200 + i * 130} `;
-    for (let x = 0; x <= 1200; x += 30) d += `L${x} ${200 + i * 130 + Math.sin((x / 130) + i) * 40} `;
-    return `<path d="${d}" fill="none" stroke="${c}" stroke-width="5" opacity="0.35"/>`;
+  svg.innerHTML = WAVE_COLS.map((c, i) => {
+    let d = `M0 ${WAVE_Y[i]} `;
+    for (let x = 0; x <= 1200; x += 30) d += `L${x} ${WAVE_Y[i] + Math.sin((x / 130) + i) * 40} `;
+    return `<path d="${d}" fill="none" stroke="${c}" stroke-width="5" opacity="0.25"/>`;
   }).join("");
+}
+
+// REAL background waveform — taps the master output. Each of the 4 lines is a SMOOTH sine wave
+// whose height is driven by the energy in one frequency band (lows→highs), so the lines swell with
+// the music (kick/bass move the lower lines, hats the top) while staying clean and fluid.
+let fftAnalyser = null;
+const WAVE_BANDS = [[20, 200], [200, 800], [800, 3000], [3000, 13000]];   // Hz per line (low→high)
+const waveAmp = [0, 0, 0, 0];      // temporally-smoothed amplitude per line
+let wavePhase = 0;
+
+// Average normalized magnitude of the FFT bins inside [lo,hi) Hz (0..~1).
+function bandLevel(buf, sr, lo, hi) {
+  const n = buf.length, nyq = sr / 2; let s = 0, c = 0;
+  for (let i = 0; i < n; i++) {
+    const hz = i * nyq / n;
+    if (hz >= lo && hz < hi) { s += Math.min(1, Math.max(0, (buf[i] + 100) / 70)); c++; }
+  }
+  return c ? s / c : 0;
+}
+// Smooth SVG path through points via quadratic curves to midpoints (no jagged segments).
+function smoothPath(pts) {
+  let d = `M${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1], mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+    d += ` Q${a[0].toFixed(1)} ${a[1].toFixed(1)} ${mx.toFixed(1)} ${my.toFixed(1)}`;
+  }
+  const L = pts[pts.length - 1];
+  return d + ` L${L[0].toFixed(1)} ${L[1].toFixed(1)}`;
+}
+
+function startWaves() {
+  const svg = document.getElementById("waves"); if (!svg || !masterBus || fftAnalyser) return;
+  fftAnalyser = new Tone.Analyser("fft", 256);
+  fftAnalyser.smoothing = 0.85;                          // built-in temporal smoothing → fluid
+  masterBus.connect(fftAnalyser);                        // passive tap (doesn't alter the audio)
+  setupMiniViz();
+  const N = 22, W = 1200, sr = Tone.getContext().rawContext.sampleRate;
+  const draw = () => {
+    const cons = document.getElementById("console");
+    if (cons && !cons.hidden) {
+      const buf = fftAnalyser.getValue();
+      wavePhase += 0.02;                                 // gentle drift so the lines flow
+      svg.innerHTML = WAVE_COLS.map((c, li) => {
+        const lvl = bandLevel(buf, sr, WAVE_BANDS[li][0], WAVE_BANDS[li][1]);
+        const target = lvl * (300 + li * 50);            // jumps high on loud bands
+        waveAmp[li] = waveAmp[li] * 0.8 + target * 0.2;  // smooth the amplitude over time
+        const amp = waveAmp[li], cyc = 1.5 + li * 0.5;   // a few smooth cycles across the screen
+        const pts = [];
+        for (let i = 0; i <= N; i++) {
+          const x = (i / N) * W;
+          const y = WAVE_Y[li] + Math.sin((i / N) * Math.PI * 2 * cyc + wavePhase + li * 1.3) * amp;
+          pts.push([x, y]);
+        }
+        return `<path d="${smoothPath(pts)}" fill="none" stroke="${c}" stroke-width="6" opacity="0.45" stroke-linecap="round"/>`;
+      }).join("");
+      drawMini(buf, sr);
+    }
+    requestAnimationFrame(draw);
+  };
+  requestAnimationFrame(draw);
+}
+
+// Mini corner visualizer (bottom-left): a compact spectrum. Two modes — YELLOW idle, RED while the
+// host is recording a take (recorder.recording) — so you can see at a glance that a take is rolling.
+let miniCanvas = null, miniCtx = null;
+function setupMiniViz() {
+  if (miniCanvas) return;
+  miniCanvas = document.createElement("canvas");
+  miniCanvas.id = "miniviz"; miniCanvas.width = 320; miniCanvas.height = 150;
+  miniCanvas.style.cssText = "position:fixed;left:20px;bottom:20px;z-index:6;width:320px;height:150px;" +
+    "border:3px solid var(--ink);border-radius:14px;background:rgba(20,18,13,.55);box-shadow:var(--shadow-sm);" +
+    "pointer-events:none";   // overlay only — never intercept clicks on the controls beneath it
+  document.body.appendChild(miniCanvas);
+  miniCtx = miniCanvas.getContext("2d");
+}
+function drawMini(buf, sr) {
+  if (!miniCtx) return;
+  const rec = !!recorder?.recording;
+  const col = rec ? "#F4533A" : "#F5B82E";              // red recording · yellow idle
+  const W = miniCanvas.width, H = miniCanvas.height, pad = 10, NB = 30;
+  const bw = (W - 2 * pad) / NB;
+  miniCtx.clearRect(0, 0, W, H);
+  for (let b = 0; b < NB; b++) {                         // log-spaced bars 40 Hz → ~16 kHz
+    const lo = 40 * Math.pow(1.225, b), hi = 40 * Math.pow(1.225, b + 1);
+    const lvl = bandLevel(buf, sr, lo, Math.min(hi, sr / 2));
+    const h = Math.max(3, lvl * (H - 2 * pad));
+    miniCtx.fillStyle = col;
+    miniCtx.fillRect(pad + b * bw + 1, H - pad - h, bw - 2, h);
+  }
+  if (rec) { miniCtx.beginPath(); miniCtx.arc(W - 16, 16, 6, 0, 7); miniCtx.fillStyle = "#F4533A"; miniCtx.fill(); }
 }
 
 // utils

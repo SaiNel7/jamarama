@@ -76,16 +76,20 @@ export async function transformPrompts(prompts) {
 // prompts — instrument one-shots should carry the genre identity ("punk" → bright/
 // edgy, per the oneshot spike FINDINGS); the soundscape translation belongs only
 // to the off-grid atmosphere layer.
-const VOICE_DEFAULTS = {
-  harmony: "warm analog synth pad, soft mellow sustained",   // prebake_voices.py defaults
-  lead: "bright expressive lead synth, singing",
+const VOICE_DEFAULTS = {   // aligned with engine/prebake_voices.py defaults
+  harmony: "clean smooth analog synth pad, clear warm mellow sustained chord, soft and pure",
+  lead: "bright expressive lead synth",
+  bass: "deep round electric bass, warm sub low end",
+  drums: "punchy acoustic drum kit, tight and clean",
 };
 export function voicePrompts(tastes) {
   if (!tastes.length) return VOICE_DEFAULTS;
-  const blend = tastes.join(", ").slice(0, 160);
+  const blend = tastes.join(", ").slice(0, 140);
   return {
-    harmony: `${blend}, sustained chord pad, soft mellow`,
-    lead: `${blend}, bright expressive lead, singing`,
+    harmony: `${blend}, clean sustained chord pad, soft mellow`,
+    lead: `${blend}, bright expressive lead`,
+    bass: `${blend}, deep round bass, warm sub low end`,
+    drums: `${blend}, punchy drum kit, tight and clean`,
   };
 }
 

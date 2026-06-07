@@ -49,6 +49,20 @@ export function romanToName(key, roman) {
   return diatonic(key).find((c) => c.roman === roman)?.name || roman;
 }
 
+// The 7 IN-KEY notes for the lead keyboard (host + phone share this so they always match).
+// Returns [{ name, pc, step, black }] ascending from the root — `step` = semitones above the root
+// (keeps the keyboard ascending), `black` = it's an accidental (renders as a black key).
+const MINOR_STEPS = [0, 2, 3, 5, 7, 8, 10];
+export function scaleNotes(key, scale = "major") {
+  const root = SHARP.indexOf(key);
+  if (root < 0) return [];
+  const steps = scale === "minor" ? MINOR_STEPS : MAJOR_STEPS;
+  return steps.map((step) => {
+    const name = SHARP[(root + step) % 12];
+    return { name, pc: (root + step) % 12, step, black: name.includes("#") };
+  });
+}
+
 // Diatonic triad as MIDI note numbers (C-1 = 0). baseOct = octave of the root.
 export function chordMidi(key, roman, baseOct = 3) {
   const root = SHARP.indexOf(key);

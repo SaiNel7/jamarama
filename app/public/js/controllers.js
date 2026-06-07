@@ -1,5 +1,5 @@
 // Phone controllers — rendered per assigned role. Fixed viewport, no scroll.
-import { Bus, diatonic } from "/js/shared.js";
+import { Bus, diatonic, scaleNotes } from "/js/shared.js";
 
 const bus = new Bus("auto");
 const screen = document.getElementById("screen");
@@ -179,6 +179,9 @@ function render() {
 function refresh() {
   if (me?.role === "crowd") refreshCrowd();
   else if (me?.role === "harmony") refreshHarmony();
+  // lead keyboard re-sticks to a new key without a full re-render
+  else if (me?.role === "lead" && document.getElementById("kb") &&
+           kbKey !== (st?.key || "A") + (st?.scale || "major")) buildKeys();
 }
 
 // ===================================================== CROWD
@@ -525,7 +528,6 @@ function closePicker() { document.getElementById("picker")?.remove(); }
 let octave = 5, leadStep = 0, phrase = [], overwriteUi = true;
 // Semitone OFFSETS from the song key root (the keyboard is transposed into the key): white =
 // major scale (always in key), black = chromatic passing tones. b = white key the black sits after.
-const WHITE = [0,2,4,5,7,9,11], BLACK = [{ pc:1, b:1 },{ pc:3, b:2 },{ pc:6, b:4 },{ pc:8, b:5 },{ pc:10, b:6 }];
 function renderLead() {
   screen.innerHTML = slimHeader("LEAD") + `
     <div class="banner"><span class="dot"></span>PLAY — YOUR LINE LOOPS &amp; THE ROOM REMIXES IT</div>
@@ -551,29 +553,31 @@ function renderLead() {
   bus.control("overwrite", { on: overwriteUi });   // sync initial overdub mode to the host
   renderMotif();
 }
+let kbKey = "";                                          // last key/scale the keyboard was built for
 function buildKeys() {
-  const kb = document.getElementById("kb"); kb.innerHTML = "";
-  const w = 100 / 7;
-  WHITE.forEach((pc, idx) => {
-    const k = document.createElement("button"); k.className = "wk";
+  const kb = document.getElementById("kb"); if (!kb) return;
+  // Stuck to the song key: ONE key per in-key note (white naturals + black accidentals), matching
+  // the host's lead visualizer exactly (both from shared scaleNotes). No out-of-key notes.
+  const notes = scaleNotes(st?.key || "A", st?.scale || "major");
+  kbKey = (st?.key || "A") + (st?.scale || "major");
+  kb.innerHTML = "";
+  const w = 100 / notes.length;
+  notes.forEach((nt, idx) => {
+    const k = document.createElement("button");
+    k.className = "wk" + (nt.black ? " blk" : "");
     k.style.left = (idx * w) + "%"; k.style.width = w + "%";
-    k.innerHTML = `<span class="d"></span>`;
-    bindKey(k, pc); kb.appendChild(k);
-  });
-  BLACK.forEach(({ pc, b }) => {
-    const k = document.createElement("button"); k.className = "bk";
-    k.style.width = (w * 0.6) + "%"; k.style.left = (b * w - w * 0.3) + "%";
-    bindKey(k, pc); kb.appendChild(k);
+    k.innerHTML = `<span class="kn">${nt.name}</span><span class="d"></span>`;
+    bindKey(k, nt); kb.appendChild(k);
   });
 }
-function bindKey(k, off) {
+function bindKey(k, nt) {
   k.addEventListener("pointerdown", (e) => {
     e.preventDefault(); k.classList.add("on"); setTimeout(() => k.classList.remove("on"), 180);
     const root = NAMES.indexOf(st?.key || "A");
-    const midi = 12 * (octave + 1) + root + off;          // transpose the keyboard into the song key
+    const midi = 12 * (octave + 1) + root + nt.step;      // ascending in-key note at the chosen octave
     const pc = ((midi % 12) + 12) % 12, oct = Math.floor(midi / 12) - 1;
     tone(440 * Math.pow(2, (midi - 69) / 12));
-    bus.control("note", { note: NAMES[pc], oct });
+    bus.control("note", { note: NAMES[pc], oct });        // host lights the matching key + records
     phrase.push({ pc }); phrase = phrase.slice(-9); renderMotif();
   });
 }

@@ -178,21 +178,23 @@ app.get("/info", async (_req, res) => {
              qr: await QRCode.toDataURL(ju, { margin: 1, width: 320 }) });
 });
 
-// Pre-bake the host's two voices (harmony + lead) from a taste prompt → Tone.Sampler one-shots
-// under public/voices/ (served statically). Offline MRT2 render (engine/prebake_voices.py), ~7s.
-// Triggered automatically on jam start with prompts derived from the players' raw taste
-// prompts (voicePrompts in taste.js); the host is told via a `voices` broadcast and swaps
-// its synths for the baked samplers. GET /prebake remains for manual testing/re-bakes.
+// Pre-bake the host's instruments (harmony + lead + bass + drum kit) from taste prompts →
+// Tone.Sampler one-shots / drum chops under public/voices/ (served statically). Offline MRT2
+// render (engine/prebake_voices.py). Triggered automatically on jam start with prompts derived
+// from the players' raw tastes (voicePrompts in taste.js); the host is told via a `voices`
+// broadcast and swaps its synths for the baked instruments. GET /prebake remains for manual
+// testing/re-bakes (`only` limits which instruments re-render).
 let prebaking = false;
-function runPrebake(harmony, lead) {
+function runPrebake({ harmony, lead, bass, drums, only = "all" }) {
   return new Promise((resolve, reject) => {
     if (prebaking) return reject(new Error("prebake already running"));
     const py = join(__dirname, "../.venv/bin/python");
     const script = join(__dirname, "../engine/prebake_voices.py");
     if (!existsSync(py) || !existsSync(script)) return reject(new Error("prebake engine not found"));
     prebaking = true;
-    console.log(`  [prebake] harmony="${harmony}" lead="${lead}" …`);
-    const child = spawn(py, [script, "--harmony", harmony, "--lead", lead, "--out", join(__dirname, "public/voices")],
+    console.log(`  [prebake] harmony="${harmony}" lead="${lead}" bass="${bass}" drums="${drums}" only=${only} …`);
+    const child = spawn(py, [script, "--harmony", harmony, "--lead", lead, "--bass", bass, "--drums", drums,
+      "--only", only, "--out", join(__dirname, "public/voices")],
       { cwd: join(__dirname, "../engine") });
     let err = "";
     child.stderr.on("data", (d) => { err += d.toString(); });
@@ -207,19 +209,23 @@ function runPrebake(harmony, lead) {
   });
 }
 app.get("/prebake", (req, res) => {
-  const harmony = String(req.query.harmony || "warm analog synth pad, mellow").slice(0, 200);
-  const lead = String(req.query.lead || "bright expressive lead synth").slice(0, 200);
-  runPrebake(harmony, lead)
+  const q = (name, dflt) => String(req.query[name] || dflt).slice(0, 200);
+  runPrebake({
+    harmony: q("harmony", "clean smooth analog synth pad, clear warm mellow sustained chord, soft and pure"),
+    lead: q("lead", "bright expressive lead synth"),
+    bass: q("bass", "deep round electric bass, warm sub low end"),
+    drums: q("drums", "punchy acoustic drum kit, tight and clean"),
+    only: ["all", "voices", "harmony", "bass", "drums"].includes(req.query.only) ? req.query.only : "all",
+  })
     .then((manifest) => res.json(manifest))
     .catch((e) => res.status(e.message.includes("already running") ? 409 : 500).json({ error: e.message }));
 });
 
-// Jam start → bake the harmony/lead voices from everyone's raw taste prompts, then tell
+// Jam start → bake the full instrument set from everyone's raw taste prompts, then tell
 // the host to swap them in ("default voice instant, personalized swaps in" — spec §invariants).
 async function prebakeFromTastes() {
-  const { harmony, lead } = voicePrompts(playerTastes());
   try {
-    const manifest = await runPrebake(harmony, lead);
+    const manifest = await runPrebake(voicePrompts(playerTastes()));
     broadcast({ type: "voices", manifest });
     console.log("  [prebake] taste voices ready — host notified");
   } catch (e) {
