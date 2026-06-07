@@ -95,10 +95,10 @@ function initSynths() {
   harmonyBus = wire(new Tone.Gain(),    bedDuck,   [HP(150), LP(3200, -24)]);  // warm pad, kill >3k noise
   bassBus    = wire(new Tone.Gain(),    bedDuck,   [HP(35),  LP(2500)]);       // round low end, no fizz
   leadBus    = wire(new Tone.Gain(),    masterBus, [HP(220), LP(9000)]);       // present mids, not ducked
-  // Streamed MRT2 texture bed (PCM from the Python engine via the server) → ducked bed → master.
-  // Joining the WebAudio graph (vs the old OS-mixer path) gives the host real control: it ducks
-  // under the drums, passes the master limiter, and is captured in the recorded export.
-  textureBus = new Tone.Gain(0.85).connect(bedDuck);
+  // Streamed MRT2 texture bed (PCM from the Python engine via the server) → master (steady wash).
+  // Routed to masterBus, NOT bedDuck — the ambient bed should sit under the band consistently, not
+  // pump/disappear on every kick. Still hits the master limiter + is captured in the export.
+  textureBus = new Tone.Gain(1.15).connect(masterBus);
   recorder.attach({ master: masterBus, drums: drumBus, harmony: harmonyBus, lead: leadBus, bass: bassBus });
 
   kick = new Tone.MembraneSynth({ octaves: 6, pitchDecay: 0.05, volume: -2 }).connect(drumBus);
@@ -114,11 +114,14 @@ function initSynths() {
   // no separate dry connect that would double the level).
   const leadFx = new Tone.Reverb({ decay: 1.6, wet: 0.18 }).connect(leadBus);
   const leadEcho = new Tone.FeedbackDelay({ delayTime: "8n.", feedback: 0.18, wet: 0.15 }).connect(leadFx);
+  // Fallback lead (used only until the prebaked MRT2 voice swaps in): a soft triangle through a
+  // gentle lowpass — warm and flute/horn-ish, NOT a harsh squeaky sawtooth. A little vibrato adds life.
   leadSynth = new Tone.MonoSynth({
-    oscillator: { type: "sawtooth" },
-    envelope: { attack: 0.005, decay: 0.18, sustain: 0.45, release: 0.25 },
-    filterEnvelope: { attack: 0.005, decay: 0.12, sustain: 0.6, baseFrequency: 600, octaves: 3 },
-    volume: -8,
+    oscillator: { type: "triangle" },
+    envelope: { attack: 0.02, decay: 0.2, sustain: 0.6, release: 0.3 },
+    filter: { type: "lowpass", Q: 0.6 },
+    filterEnvelope: { attack: 0.03, decay: 0.15, sustain: 0.5, baseFrequency: 900, octaves: 2 },
+    volume: -10,
   }).connect(leadEcho);
   // BASS voice — generative, host-owned, NO player controls it: it just locks to the harmony and
   // plays chord tones (root/fifth), always monophonic. Fallback mono synth = round sub (sine +
@@ -389,8 +392,12 @@ function swingOffsetSec(sub) {
   const sw = FEEL_SWING[st?.feel || "backbeat"] || 0;
   if (!sw) return 0;
   const T = Tone.Time("16n").toSeconds();
+  // The OFF-8TH ("and") is the core swing — keep it full so the groove always swings.
   if (sub % 4 === 2) return sw * (4 / 3) * T;   // off-beat 8th → toward triplet (sw ≈ .5 is a true triplet)
-  if (sub % 2 === 1) return sw * (2 / 3) * T;   // 16th subdivisions: lighter
+  // The IN-BETWEEN 16ths swing much LIGHTER, and tighten further as the groove gets busy (complexity x):
+  // a heavily-swung 8th grid with 16ths placed at its midpoints lurches in dense passages — real
+  // double-time is played straighter. This is what was "falling apart" when the groove got complex.
+  if (sub % 2 === 1) return sw * (1 / 3) * T * (1 - 0.7 * (groove?.x || 0));
   return 0;
 }
 
@@ -489,7 +496,7 @@ let playLoop = [];                               // generated playback for the c
 let loopLen = 4 * SPB;                            // dynamic — set when the first pass closes
 let loopStart = 0;                               // global step (s16) of the loop's bar 0
 let overwrite = true;                            // overdub mode (from the phone)
-let leadWild = 0.3;                              // wildness (host slider) — audible remix by default
+let leadWild = 0.42;                             // wildness (host slider) — call-&-response by default so the lead varies (your phrase still returns every other loop)
 let leadLoopIdx = 0;
 let lastNoteStep = -999;                          // last step a note arrived (for auto-lock on silence)
 const AUTO_LOCK = SPB;                            // ~1 bar of silence → lock the loop & start looping
@@ -547,11 +554,14 @@ function leadGenerate() {
       })
     : null);
   const gen = recLoop.length ? leadBrain.generate(leadLoopIdx++, leadParams()) : [];
-  // Hard guarantee in-key: snap every note to the song scale. Catches chromatic artifacts from
-  // harmonize's fractional move and any out-of-key input.
+  // Hard guarantee in-key: snap every note to the song scale. Then OCTAVE-FOLD into the voice's good
+  // register (D3..A5) so a high octave choice or an upward transform never stretches the sampler into
+  // a thin/squeaky pitch-shift — keeps it sounding like the actual instrument.
   const root = keyRoot(st?.key || "A"), scale = scaleSteps(st?.scale);
-  playLoop = gen.map((n) => ({ ...n, p: snap(n.p, root, scale) }));
+  playLoop = gen.map((n) => ({ ...n, p: foldToRange(snap(n.p, root, scale), 50, 81) }));
 }
+// Move a pitch into [lo,hi] by whole octaves (preserves pitch class).
+function foldToRange(p, lo, hi) { while (p > hi) p -= 12; while (p < lo) p += 12; return p; }
 function leadCloseLoop() {                         // lock the loop to the readout window (4 bars)
   if (leadState !== "recording") return;
   loopLen = BARS * SPB;                            // length == readout length (kept in sync)
@@ -581,7 +591,7 @@ function pushLeadToTexture(active, pitches) {
 // The engine streams ~0.48s Int16 stereo chunks; schedule them back-to-back on the audio clock with
 // a small lead buffer so network jitter doesn't gap the bed. If a chunk is late (underrun) the
 // cursor re-primes. Routed through textureBus → bedDuck → master, so it ducks and is recorded.
-let texNextTime = 0;
+let texNextTime = 0, texChunks = 0;
 const TEX_LEAD = 0.18;                                  // seconds of jitter buffer ahead of the clock
 function playTexturePcm(buf) {
   if (!textureBus) return;                              // audio engine not started yet → drop
@@ -594,12 +604,14 @@ function playTexturePcm(buf) {
   for (let i = 0; i < frames; i++) { L[i] = i16[2 * i] / 32768; R[i] = i16[2 * i + 1] / 32768; }
   const src = ctx.createBufferSource();
   src.buffer = ab;
-  Tone.connect(src, textureBus);
+  try { Tone.connect(src, textureBus); } catch { src.connect(textureBus.input || textureBus); }
   const now = ctx.currentTime;
   if (texNextTime < now + 0.02) texNextTime = now + TEX_LEAD;   // (re)prime the buffer at start / after a gap
   src.start(texNextTime);
   texNextTime += ab.duration;
   src.onended = () => { try { src.disconnect(); } catch {} };
+  if (texChunks++ === 0) console.log("[texture] receiving PCM from the engine — bed is live");
+  else if (texChunks % 40 === 0) console.log(`[texture] ${texChunks} chunks played`);
 }
 bus.onBinary(playTexturePcm);
 

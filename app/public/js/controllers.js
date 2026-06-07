@@ -570,7 +570,7 @@ function closePicker() { document.getElementById("picker")?.remove(); }
 // playing records, CLOSE locks the length (= how long you recorded), then keep playing to
 // overdub. OVERWRITE replaces under the playhead; LAYER overdubs. Quantize + remix (WILDNESS)
 // are host-side.
-let octave = 5, leadStep = 0, phrase = [], overwriteUi = true;
+let octave = 4, leadStep = 0, phrase = [], overwriteUi = true;   // C4–B4 = fuller mid register (octave 5 stretched the sampler thin/squeaky)
 // Semitone OFFSETS from the song key root (the keyboard is transposed into the key): white =
 // major scale (always in key), black = chromatic passing tones. b = white key the black sits after.
 function renderLead() {
