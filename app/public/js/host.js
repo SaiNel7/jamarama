@@ -307,14 +307,14 @@ function showBakeLoading() {
          background:var(--cream);padding:24px;font-family:"Archivo",system-ui,sans-serif;}
        #bakeload .bl-card{display:flex;flex-direction:column;align-items:center;gap:22px;text-align:center;
          background:var(--card);border:var(--thick);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);
-         padding:38px 34px;max-width:min(90vw,460px);}
+         padding:38px 34px;width:min(90vw,420px);}
        #bakeload .bl-kicker{font-family:"Space Mono",monospace;font-weight:700;font-size:13px;letter-spacing:.14em;
          background:var(--groove);color:var(--ink);border:var(--border);border-radius:999px;padding:7px 16px;
          box-shadow:var(--shadow-sm);}
        #bakeload .bl-genre{font-weight:900;font-size:34px;line-height:1.05;text-transform:uppercase;letter-spacing:-.02em;
          color:var(--ink);max-width:11ch;}
        #bakeload .bl-wheel{position:relative;width:128px;height:128px;border-radius:50%;border:var(--thick);
-         box-shadow:var(--shadow);background:conic-gradient(var(--harmony) 0 25%,var(--lead) 0 50%,
+         background:conic-gradient(var(--harmony) 0 25%,var(--lead) 0 50%,
          var(--groove) 0 75%,var(--crowd) 0 100%);animation:bl-spin 1.5s linear infinite;}
        #bakeload .bl-hub{position:absolute;top:50%;left:50%;width:34px;height:34px;transform:translate(-50%,-50%);
          border-radius:50%;background:var(--card);border:var(--thick);}
