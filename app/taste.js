@@ -18,13 +18,19 @@ import Anthropic from "@anthropic-ai/sdk";
 const APPEND_SUFFIX = "rendered as beatless ambient texture, sustained pads, atmospheric wash";
 const LLM_MODEL = "claude-haiku-4-5";
 const LLM_TIMEOUT_MS = 3000;
+// Soundscape translation, NOT genre naming: genre words make the model PLAY that
+// genre (rhythmic, song-like). Instead we evoke the world the vibe lives in —
+// the texture layer should be space and air, never a performance. Genre identity
+// still reaches the instrument one-shots via voicePrompts (raw prompts) below.
 const LLM_SYSTEM =
-  "You rewrite a person's music taste or vibe into a short comma-separated " +
-  "music-style description for a music audio-embedding model (genre, " +
-  "instrumentation, mood, texture adjectives). Keep the genre identity " +
-  "recognizable. Describe only sustained, textural, atmospheric elements — " +
-  "never mention drums, beats, percussion, or rhythm. Output the description " +
-  "only, nothing else.";
+  "You translate a person's music taste or vibe into a short comma-separated " +
+  "description of an atmospheric SOUNDSCAPE for a music audio-embedding model. " +
+  "Never name the genre and never describe songs, melodies, riffs, or anyone " +
+  "playing music. Instead evoke the world that vibe lives in: ambient spaces, " +
+  "environmental sounds, sustained drones and textures. Example: 'country' → " +
+  "'dry wind over open plains, distant horse whinny, creaking porch wood, " +
+  "rattlesnake hiss, warm dusty air'. Only sustained, non-rhythmic elements — " +
+  "never drums, beats, percussion, or pulse. Output the description only.";
 
 const mode = () => (process.env.TASTE_MODE === "llm" ? "llm" : "append");
 const hasKey = () => Boolean(process.env.ANTHROPIC_API_KEY);
