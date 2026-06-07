@@ -49,6 +49,7 @@ const state = {
   tempo: null,                      // before the jam; a concrete fallback is set at jam start ("start")
   bar: 0, beat: 0,
   chord: "I",                       // current harmony degree (roman numeral)
+  chordPcs: [],                     // current chord pitch-classes (for the MRT2 texture engine)
   progression: ["I", "IV", "V", "vi"],
   progressionQuals: [],             // per-chord qualities for the genre seed (jazz 7ths etc.); [] = triads
   progressionChords: [],            // [{label, notes:[midi]}] — voicing for swapped/non-diatonic chords
@@ -335,7 +336,13 @@ wss.on("connection", (ws, req) => {
           else if (KEY_NAMES.includes(msg.payload)) { state.key = msg.payload; hostSetKey = true; }
         }
         if (msg.action === "scale" && SCALE_NAMES.includes(msg.payload)) { state.scale = msg.payload; hostSetScale = true; }
-        if (msg.action === "chord") state.chord = msg.payload;     // host advances the playhead on the downbeat
+        if (msg.action === "chord") {                              // host advances the playhead on the downbeat
+          const p = msg.payload;
+          if (p && typeof p === "object") {                       // {degree, pcs} — pcs for the texture engine
+            if (p.degree != null) state.chord = p.degree;
+            state.chordPcs = Array.isArray(p.pcs) ? p.pcs : [];
+          } else state.chord = p;                                 // back-compat: bare roman string
+        }
         if (msg.action === "taste") state.taste = msg.payload;
         if (msg.action === "leadNotes") {                          // host: first lead note + live loop pitches
           state.leadActive = Boolean(msg.payload?.active);

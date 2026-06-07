@@ -278,29 +278,61 @@ function bakeStatus(msg, done = false) {
 
 // Full-screen loading gate: shown while THIS round's genre voices extract from MRT2, so the band
 // never opens on the built-in/stale fallback. The ambient texture plays underneath while it waits.
+// Neo-brutalist to match the app: cream takeover, chunky bordered card, spinning role-colour wheel,
+// and a rotating status line ("designing sounds" → … → "almost there!").
+const BAKE_MSGS = ["designing sounds", "considering chord progressions", "tuning the upright bass",
+  "shaping the groove", "dialing in the drums", "voicing the chords", "mixing it together", "almost there!"];
+let bakeTextTimer = null;
 function showBakeLoading() {
   let el = document.getElementById("bakeload");
   if (!el) {
     el = document.createElement("div");
     el.id = "bakeload";
-    el.style.cssText = "position:fixed;inset:0;z-index:10000;display:flex;flex-direction:column;" +
-      "align-items:center;justify-content:center;gap:18px;background:rgba(8,8,10,.96);color:#fff;" +
-      "font-family:ui-monospace,monospace;text-align:center;padding:24px";
     document.body.appendChild(el);
   }
   const genre = (st?.genres?.length ? st.genres.join(" + ") : "your");
   el.innerHTML =
-    `<div style="font:700 13px/1.4 ui-monospace;letter-spacing:.14em;color:#F5B82E">EXTRACTING INSTRUMENTS</div>` +
-    `<div style="font:800 30px/1.15 ui-monospace;max-width:90vw;text-transform:uppercase">${genre} band</div>` +
-    `<div style="display:flex;gap:10px;margin-top:6px">${["HARMONY","LEAD","BASS","DRUMS"].map((n,i)=>
-      `<span style="font:700 11px/1 ui-monospace;padding:7px 11px;border-radius:999px;background:#1a1a1f;` +
-      `color:#9aa;animation:bakepulse 1.2s ${i*0.18}s infinite ease-in-out">${n}</span>`).join("")}</div>` +
-    `<div style="font:500 12px/1.5 ui-monospace;color:#888;max-width:34ch;margin-top:8px">` +
-    `baking each instrument from your genre on MRT2 — the ambient bed is already playing. ~40s.</div>` +
-    `<style>@keyframes bakepulse{0%,100%{opacity:.35}50%{opacity:1;color:#5FD0A8}}</style>`;
+    `<div class="bl-card">
+       <div class="bl-kicker">BUILDING YOUR BAND</div>
+       <div class="bl-genre">${genre}</div>
+       <div class="bl-wheel"><div class="bl-hub"></div></div>
+       <div class="bl-msg" id="bl-msg">${BAKE_MSGS[0]}<span class="bl-dots"></span></div>
+     </div>
+     <style>
+       #bakeload{position:fixed;inset:0;z-index:10000;display:flex;align-items:center;justify-content:center;
+         background:var(--cream);padding:24px;font-family:"Archivo",system-ui,sans-serif;}
+       #bakeload .bl-card{display:flex;flex-direction:column;align-items:center;gap:22px;text-align:center;
+         background:var(--card);border:var(--thick);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);
+         padding:38px 34px;max-width:min(90vw,460px);}
+       #bakeload .bl-kicker{font-family:"Space Mono",monospace;font-weight:700;font-size:13px;letter-spacing:.14em;
+         background:var(--groove);color:var(--ink);border:var(--border);border-radius:999px;padding:7px 16px;
+         box-shadow:var(--shadow-sm);}
+       #bakeload .bl-genre{font-weight:900;font-size:34px;line-height:1.05;text-transform:uppercase;letter-spacing:-.02em;
+         color:var(--ink);max-width:11ch;}
+       #bakeload .bl-wheel{position:relative;width:128px;height:128px;border-radius:50%;border:var(--thick);
+         box-shadow:var(--shadow);background:conic-gradient(var(--harmony) 0 25%,var(--lead) 0 50%,
+         var(--groove) 0 75%,var(--crowd) 0 100%);animation:bl-spin 1.5s linear infinite;}
+       #bakeload .bl-hub{position:absolute;top:50%;left:50%;width:34px;height:34px;transform:translate(-50%,-50%);
+         border-radius:50%;background:var(--card);border:var(--thick);}
+       #bakeload .bl-msg{font-family:"Space Mono",monospace;font-weight:700;font-size:16px;color:var(--ink);
+         background:var(--cream);border:var(--border);border-radius:999px;padding:10px 18px;box-shadow:var(--shadow-sm);
+         min-height:1em;}
+       #bakeload .bl-dots::after{content:"";animation:bl-dots 1.4s steps(4,end) infinite;}
+       @keyframes bl-spin{to{transform:rotate(360deg)}}
+       @keyframes bl-dots{0%{content:""}25%{content:"."}50%{content:".."}75%{content:"..."}}
+     </style>`;
   el.style.display = "flex";
+  // rotate the status line; hold on the last ("almost there!") until the bake finishes.
+  clearInterval(bakeTextTimer);
+  let i = 0;
+  bakeTextTimer = setInterval(() => {
+    i = Math.min(i + 1, BAKE_MSGS.length - 1);
+    const m = document.getElementById("bl-msg");
+    if (m) m.innerHTML = `${BAKE_MSGS[i]}<span class="bl-dots"></span>`;
+  }, 4500);
 }
 function hideBakeLoading() {
+  clearInterval(bakeTextTimer); bakeTextTimer = null;
   const el = document.getElementById("bakeload");
   if (el) { el.style.transition = "opacity .5s"; el.style.opacity = "0"; setTimeout(() => { el.style.display = "none"; el.style.opacity = "1"; }, 500); }
 }
@@ -403,7 +435,11 @@ function harmonyTick(time) {
       lastChordKey = key;
       let ri = 0; for (let i = 1; i <= bi; i++) if ((sched[i].label || sched[i].roman) !== (sched[i - 1].label || sched[i - 1].roman)) ri++;
       progIdx = ri;
-      bus.send({ type: "host", action: "chord", payload: slot.roman || slot.label });
+      // send the EXACT chord pitch classes (so the MRT2 texture conditions on what the band plays,
+      // covering 7ths/voicings + minor/modal keys), plus the degree for the readout/state.
+      const cnotes = (slot.notes && slot.notes.length) ? slot.notes : chordMidi(st?.key || "A", slot.roman || "I", 4, st?.scale);
+      const pcs = [...new Set(cnotes.map((m) => ((m % 12) + 12) % 12))];
+      bus.send({ type: "host", action: "chord", payload: { degree: slot.roman || slot.label, pcs } });
       Tone.getDraw().schedule(() => { renderRoll(); flashRoll(); }, time);
     }
   }

@@ -51,12 +51,28 @@ class TextureDSP:
 SHARP = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 MAJOR_STEPS = [0, 2, 4, 5, 7, 9, 11]
 ROMAN = ["I", "ii", "iii", "IV", "V", "vi", "vii"]
+# Semitones from a mode's tonic to its PARENT major tonic (mirrors shared.js MODES), so a roman
+# numeral resolves to the same chord the band plays in minor/modal keys (not always major).
+MODE_PARENT = {"major": 0, "ionian": 0, "minor": 3, "aeolian": 3, "dorian": 10, "phrygian": 8,
+               "lydian": 7, "mixolydian": 5, "locrian": 1, "pentatonic": 0, "chromatic": 0}
 
-def chord_notes_vec(key, roman, base_oct=4, onset=False):
-    """128-slot notes vector: -1 masked (model free), 2 onset, 3 sustained-on."""
+def notes_from_pcs(pcs, base_oct=4, onset=False):
+    """128-slot notes vector from explicit pitch classes (what the band actually plays).
+    -1 masked (model free), 2 onset, 3 sustained-on."""
+    v = [-1] * 128
+    base = 12 * (base_oct + 1)
+    for pc in pcs:
+        midi = base + (int(pc) % 12)
+        if 0 <= midi < 128:
+            v[midi] = 2 if onset else 3
+    return v
+
+def chord_notes_vec(key, roman, scale="major", base_oct=4, onset=False):
+    """Fallback when no explicit pitch classes are sent: build the diatonic triad of `roman`
+    in the key's PARENT major (so minor/modal keys stay in-key)."""
     v = [-1] * 128
     try:
-        root = SHARP.index(key)
+        root = (SHARP.index(key) + MODE_PARENT.get(scale, 0)) % 12
         d = ROMAN.index(roman)
     except ValueError:
         return v
@@ -72,7 +88,9 @@ class Params:
     def __init__(self):
         self.lock = threading.Lock()
         self.key = "A"
+        self.scale = "major"
         self.degree = "I"
+        self.chord_pcs = []          # explicit chord pitch-classes from the host (exact band chord)
         self.taste = ["warm ambient pads", "cinematic texture"]
         self.energy = 0.0
         self._chord_changed = True   # force an onset on first/changed chord
@@ -85,6 +103,9 @@ class Params:
         with self.lock:
             self.phase = st.get("phase", self.phase)
             self.key = st.get("key") or self.key      # key can be null (blank) pre-jam → keep last valid
+            self.scale = st.get("scale") or self.scale
+            if st.get("chordPcs") is not None:
+                self.chord_pcs = list(st.get("chordPcs"))
             self.energy = st.get("energy", self.energy)
             self.taste = st.get("taste", self.taste)
             self.lead_active = bool(st.get("leadActive", self.lead_active))
@@ -99,8 +120,8 @@ class Params:
         with self.lock:
             onset = self._chord_changed
             self._chord_changed = False
-            return (self.key, self.degree, list(self.taste), self.energy, onset,
-                    self.lead_active, list(self.lead_pitches), self.lead_prompt)
+            return (self.key, self.scale, self.degree, list(self.chord_pcs), list(self.taste),
+                    self.energy, onset, self.lead_active, list(self.lead_pitches), self.lead_prompt)
 
     def playing(self):               # generate texture only during the jam (muted in the lobby)
         with self.lock:
@@ -161,7 +182,11 @@ def main():
             base = (1 - LEAD_PROMPT_WEIGHT) * taste_emb + LEAD_PROMPT_WEIGHT * embed(lead_prompt)
         return (1 - LEAD_ANCHOR_WEIGHT) * base + LEAD_ANCHOR_WEIGHT * _anchor
 
-    audio_q = queue.Queue(maxsize=6)
+    # Latency: small chunks + a shallow queue so a chord/lead/energy change is HEARD within ~1s
+    # instead of up to ~6s. FRAMES=12 ≈ 0.48s of audio per generation (MRT2 frame ≈ 0.04s).
+    FRAMES = 12
+    FRAME_SEC = 0.04
+    audio_q = queue.Queue(maxsize=2)
     stop = threading.Event()
     gen_state = {"state": None}
     dsp = TextureDSP()
@@ -175,9 +200,11 @@ def main():
     AMBIENT_CFG_MC,    LEAD_CFG_MC    = 3.0, 4.0
     AMBIENT_GAIN,      LEAD_GAIN      = 0.5, 0.6
     def generate_one():
-        key, degree, taste, energy, onset, lead_active, lead_pitches, lead_prompt = params.snapshot()
+        key, scale, degree, chord_pcs, taste, energy, onset, lead_active, lead_pitches, lead_prompt = params.snapshot()
         style = style_for(taste, lead_active, lead_prompt)
-        notes = chord_notes_vec(key, degree, onset=onset)
+        # condition on the EXACT chord pitch classes the band is playing when the host sends them
+        # (covers 7ths/voicings + minor/modal keys); fall back to the roman triad otherwise.
+        notes = notes_from_pcs(chord_pcs, onset=onset) if chord_pcs else chord_notes_vec(key, degree, scale, onset=onset)
         if lead_active:
             for p in lead_pitches:                      # feed the lead's live MIDI straight in,
                 p = int(p)                              # SUSTAINED (3) → present, not rhythmic
@@ -191,7 +218,7 @@ def main():
             cfg_notes=LEAD_CFG_NOTES if lead_active else AMBIENT_CFG_NOTES,   # lead mode tracks the melody
             cfg_musiccoca=LEAD_CFG_MC if lead_active else AMBIENT_CFG_MC,     # …and commits to the style
             temperature=1.1 + 0.5 * energy,  # crowd energy → more motion
-            frames=25, state=gen_state["state"],
+            frames=FRAMES, state=gen_state["state"],
         )
         samples = dsp.process(np.asarray(wav.samples, dtype=np.float32))  # → atmospheric wash, no drums
         try:
@@ -233,7 +260,7 @@ def main():
         degree, onset, energy, shp, lead = generate_one()                     # lead-conscious mode
         print(f"[texture] gen chord={degree} onset={onset} energy={energy:.2f} lead={lead} -> {shp}")
         assert lead is True, "lead mode did not engage after leadActive"
-        rtf = 4.0 / (time.time() - t0)
+        rtf = (3 * FRAMES * FRAME_SEC) / (time.time() - t0)
         print(f"[texture] TEST OK — {audio_q.qsize()} chunks queued, re-root onset + lead-wake fired, ~{rtf:.2f}x RTF.")
         return
 
