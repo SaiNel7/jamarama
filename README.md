@@ -1,3 +1,5 @@
+<img width="5921" height="3947" alt="DSC00034 (1)" src="https://github.com/user-attachments/assets/44adb259-0af1-4494-a861-0832901f8411" />
+
 # jamarama
 
 Real-time multiplayer jam: a deterministic, clock-locked band (drums + chords
