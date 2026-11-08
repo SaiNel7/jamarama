@@ -1,0 +1,18 @@
+# Render Blueprint: hosted band-only Jamarama demo (app/gateway.js).
+# Each visitor gets their own room process; Magenta is off (no Apple Silicon GPU in the cloud).
+services:
+  - type: web
+    name: jamarama-demo
+    runtime: node
+    rootDir: app
+    plan: free            # free sleeps after ~15 min idle (~1 min cold start); "starter" stays awake
+    buildCommand: echo "node_modules are bundled"
+    startCommand: node gateway.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: MAX_ROOMS
+        value: "4"
+      - key: IDLE_MIN
+        value: "10"

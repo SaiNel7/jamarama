@@ -42,6 +42,23 @@ bus.on("voices", () => {
 // state — never flash the LAN address. The final URL (tunnel, or LAN only if the
 // tunnel can't start) is the first thing ever displayed. Also feeds the console's
 // audience join QR (#qr2) once the link is final.
+// Hosted public demo (app/gateway.js): say what this is, and what it isn't.
+function showDemoNote() {
+  if (document.getElementById("demo-note")) return;
+  const el = document.createElement("div");
+  el.id = "demo-note";
+  el.style.cssText = "position:fixed;left:12px;bottom:12px;z-index:9999;max-width:min(440px,calc(100vw - 24px));"
+    + "background:#fffbea;color:#111;border:3px solid #111;box-shadow:5px 5px 0 #111;padding:10px 34px 10px 12px;"
+    + "font:14px/1.4 system-ui,sans-serif";
+  el.innerHTML = `<b>Live demo · band only.</b> The clock-locked band runs here; the Magenta RealTime 2
+    texture layer needs an Apple Silicon Mac, so it's off.
+    <a href="https://dylancantor.com/jamarama.html" target="_blank" rel="noopener">Hear the full version →</a><br>
+    No phone? Open <a href="/join" target="_blank" rel="noopener">/join</a> in another window to play a part.
+    <button aria-label="Dismiss" style="position:absolute;top:4px;right:6px;border:0;background:none;font:20px system-ui;cursor:pointer">×</button>`;
+  el.querySelector("button").onclick = () => el.remove();
+  document.body.appendChild(el);
+}
+
 async function refreshInfo() {
   try {
     const info = await (await fetch("/info")).json();
@@ -56,6 +73,7 @@ async function refreshInfo() {
     document.getElementById("joinurl").textContent = info.joinUrl;
     const q2 = document.getElementById("qr2");           // audience join QR on the console
     if (q2) q2.src = info.qr;
+    if (info.demo) showDemoNote();
   } catch { setTimeout(refreshInfo, 1200); }
 }
 refreshInfo();

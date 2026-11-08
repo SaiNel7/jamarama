@@ -199,7 +199,7 @@ app.get("/", (_req, res) => res.sendFile(join(__dirname, "public/host.html")));
 app.get("/join", (_req, res) => res.sendFile(join(__dirname, "public/join.html")));
 app.get("/info", async (_req, res) => {
   const ju = joinUrl();   // re-read every request: flips to the tunnel URL once it's up
-  res.json({ ip: IP, port: PORT, joinUrl: ju, pending: tunnelPending,
+  res.json({ ip: IP, port: PORT, joinUrl: ju, pending: tunnelPending, demo: Boolean(process.env.DEMO_MODE),
              qr: await QRCode.toDataURL(ju, { margin: 1, width: 320 }) });
 });
 

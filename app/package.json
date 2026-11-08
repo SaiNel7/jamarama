@@ -2,11 +2,12 @@
   "name": "jamarama",
   "version": "0.3.0",
   "private": true,
-  "description": "Real-time multiplayer jam — host + phone controllers over LAN",
+  "description": "Real-time multiplayer jam \u2014 host + phone controllers over LAN",
   "type": "module",
   "scripts": {
     "start": "node --env-file-if-exists=.env server.js",
-    "dev": "node --watch --env-file-if-exists=.env server.js"
+    "dev": "node --watch --env-file-if-exists=.env server.js",
+    "demo": "node gateway.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.102.0",
@@ -16,5 +17,8 @@
     "tone": "^15.0.4",
     "vexflow": "^4.2.5",
     "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

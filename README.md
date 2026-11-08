@@ -26,6 +26,13 @@ clock-locked band otherwise. The version submitted to the Audiotool Challenge is
 `submitted-audiotool`; this branch only adds setup, the fallback, and the bundled default
 instrument samples (`app/public/voices_default/`).
 
+### Hosted demo (band only)
+
+`app/gateway.js` runs a public demo: every visitor gets their own room (a separate
+`server.js` process), phones join through the room's QR link, and Magenta is off. Deploy it
+with the included `render.yaml` (Render → New → Blueprint), or run it locally with
+`cd app && npm run demo`.
+
 **Canonical spec:** [`MASTER_SPEC_V3.md`](MASTER_SPEC_V3.md) ·
 design system: [`DESIGN.md`](DESIGN.md) · app details: [`app/README.md`](app/README.md)
 
