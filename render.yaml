@@ -1,5 +1,7 @@
-# Render Blueprint: hosted band-only Jamarama demo (app/gateway.js).
-# Each visitor gets their own room process; Magenta is off (no Apple Silicon GPU in the cloud).
+# Render Blueprint: hosted Jamarama demo (app/gateway.js).
+# Each visitor gets their own room process. The local MLX Magenta engine is off (no Apple Silicon
+# here); set TEXTURE_URL + TEXTURE_TOKEN (the mrt2-cloud GPU service) to stream the MRT2 texture
+# layer from the cloud. Unset → band only.
 services:
   - type: web
     name: jamarama-demo
@@ -16,3 +18,7 @@ services:
         value: "4"
       - key: IDLE_MIN
         value: "10"
+      - key: TEXTURE_URL          # https://<workspace>--mrt2-cloud-serve.modal.run (set in the dashboard)
+        sync: false
+      - key: TEXTURE_TOKEN        # the mrt2-cloud MRT2_TOKEN secret (set in the dashboard)
+        sync: false
