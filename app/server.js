@@ -263,7 +263,19 @@ async function prebakeFromTastes() {
     broadcast({ type: "voices", manifest });
     console.log("  [prebake] taste voices ready — host notified");
   } catch (e) {
-    console.log(`  [prebake] skipped (${e.message}) — host keeps the built-in synths`);
+    console.log(`  [prebake] skipped (${e.message}) — using the default instrument samples`);
+    useDefaultVoices();
+  }
+}
+// No bake this round (NO_PREBAKE, or no Magenta installed): release the host's loading gate right
+// away with the default samples already in public/voices, instead of waiting out its 150 s timeout.
+function useDefaultVoices() {
+  try {
+    const manifest = JSON.parse(readFileSync(join(__dirname, "public/voices/manifest.json"), "utf8"));
+    voicesManifest = manifest;
+    broadcast({ type: "voices", manifest });
+  } catch {
+    broadcast({ type: "voices", manifest: null });   // nothing on disk → host starts on built-in synths
   }
 }
 
@@ -396,7 +408,7 @@ wss.on("connection", (ws, req) => {
           // async; `voices` broadcast when the bake lands. NO_PREBAKE=1 keeps the
           // built-in synths all jam (A/B the baked voices, or save GPU on weak hosts).
           if (!process.env.NO_PREBAKE) prebakeFromTastes();
-          else console.log("  [prebake] disabled (NO_PREBAKE=1) — built-in synths all jam");
+          else { console.log("  [prebake] disabled (NO_PREBAKE=1) — default instrument samples"); useDefaultVoices(); }
         }
         broadcastState();
         break;
