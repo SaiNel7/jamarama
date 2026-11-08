@@ -1,0 +1,133 @@
+{
+  "sr": 48000,
+  "voices": {
+    "harmony": {
+      "prompt": "acoustic grand piano, warm felted hammers, expressive jazz comping voicings, close-mic studio resonance",
+      "variations": [
+        {
+          "C2": "harmony_v0_C2.wav",
+          "G2": "harmony_v0_G2.wav",
+          "C3": "harmony_v0_C3.wav",
+          "E3": "harmony_v0_E3.wav",
+          "G#3": "harmony_v0_Gs3.wav",
+          "C4": "harmony_v0_C4.wav",
+          "G4": "harmony_v0_G4.wav",
+          "C5": "harmony_v0_C5.wav",
+          "E5": "harmony_v0_E5.wav",
+          "G#5": "harmony_v0_Gs5.wav",
+          "C6": "harmony_v0_C6.wav"
+        }
+      ]
+    },
+    "lead": {
+      "prompt": "muted jazz trumpet, breathy Harmon-mute bloom, warm intimate vibrato, close-mic studio air",
+      "variations": [
+        {
+          "C2": "lead_v0_C2.wav",
+          "G2": "lead_v0_G2.wav",
+          "C3": "lead_v0_C3.wav",
+          "E3": "lead_v0_E3.wav",
+          "G#3": "lead_v0_Gs3.wav",
+          "C4": "lead_v0_C4.wav",
+          "G4": "lead_v0_G4.wav",
+          "C5": "lead_v0_C5.wav",
+          "E5": "lead_v0_E5.wav",
+          "G#5": "lead_v0_Gs5.wav",
+          "C6": "lead_v0_C6.wav"
+        },
+        {
+          "C2": "lead_v1_C2.wav",
+          "G2": "lead_v1_G2.wav",
+          "C3": "lead_v1_C3.wav",
+          "E3": "lead_v1_E3.wav",
+          "G#3": "lead_v1_Gs3.wav",
+          "C4": "lead_v1_C4.wav",
+          "G4": "lead_v1_G4.wav",
+          "C5": "lead_v1_C5.wav",
+          "E5": "lead_v1_E5.wav",
+          "G#5": "lead_v1_Gs5.wav",
+          "C6": "lead_v1_C6.wav"
+        },
+        {
+          "C2": "lead_v2_C2.wav",
+          "G2": "lead_v2_G2.wav",
+          "C3": "lead_v2_C3.wav",
+          "E3": "lead_v2_E3.wav",
+          "G#3": "lead_v2_Gs3.wav",
+          "C4": "lead_v2_C4.wav",
+          "G4": "lead_v2_G4.wav",
+          "C5": "lead_v2_C5.wav",
+          "E5": "lead_v2_E5.wav",
+          "G#5": "lead_v2_Gs5.wav",
+          "C6": "lead_v2_C6.wav"
+        }
+      ]
+    },
+    "bass": {
+      "prompt": "upright double bass, woody fingered pluck, warm round low-end, close-mic studio resonance",
+      "variations": [
+        {
+          "C1": "bass_v0_C1.wav",
+          "E1": "bass_v0_E1.wav",
+          "A1": "bass_v0_A1.wav",
+          "B1": "bass_v0_B1.wav",
+          "C2": "bass_v0_C2.wav",
+          "E2": "bass_v0_E2.wav",
+          "F2": "bass_v0_F2.wav",
+          "G2": "bass_v0_G2.wav",
+          "C3": "bass_v0_C3.wav",
+          "E3": "bass_v0_E3.wav",
+          "G#3": "bass_v0_Gs3.wav",
+          "C4": "bass_v0_C4.wav"
+        },
+        {
+          "C1": "bass_v1_C1.wav",
+          "E1": "bass_v1_E1.wav",
+          "A1": "bass_v1_A1.wav",
+          "B1": "bass_v1_B1.wav",
+          "C2": "bass_v1_C2.wav",
+          "E2": "bass_v1_E2.wav",
+          "F2": "bass_v1_F2.wav",
+          "G2": "bass_v1_G2.wav",
+          "C3": "bass_v1_C3.wav",
+          "E3": "bass_v1_E3.wav",
+          "G#3": "bass_v1_Gs3.wav",
+          "C4": "bass_v1_C4.wav"
+        },
+        {
+          "C1": "bass_v2_C1.wav",
+          "E1": "bass_v2_E1.wav",
+          "A1": "bass_v2_A1.wav",
+          "B1": "bass_v2_B1.wav",
+          "C2": "bass_v2_C2.wav",
+          "E2": "bass_v2_E2.wav",
+          "F2": "bass_v2_F2.wav",
+          "G2": "bass_v2_G2.wav",
+          "C3": "bass_v2_C3.wav",
+          "E3": "bass_v2_E3.wav",
+          "G#3": "bass_v2_Gs3.wav",
+          "C4": "bass_v2_C4.wav"
+        }
+      ]
+    }
+  },
+  "drums": {
+    "prompt": "brushed jazz kit, soft swung brush-swirls, warm ride shimmer, intimate club feel",
+    "kick": [
+      "drums_kick_0.wav",
+      "drums_kick_1.wav",
+      "drums_kick_2.wav"
+    ],
+    "snare": [
+      "drums_snare_0.wav",
+      "drums_snare_1.wav",
+      "drums_snare_2.wav"
+    ],
+    "hat": [
+      "drums_hat_0.wav",
+      "drums_hat_1.wav",
+      "drums_hat_2.wav"
+    ]
+  },
+  "built_s": 42.01
+}

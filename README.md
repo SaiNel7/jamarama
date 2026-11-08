@@ -8,6 +8,24 @@ Real-time multiplayer jam: a deterministic, clock-locked band (drums + chords
 texture halo that lives off the grid. Phones are thin controllers joining
 over LAN via QR.
 
+## Try it
+
+```sh
+git clone https://github.com/SaiNel7/jamarama.git && cd jamarama
+./setup.sh          # Apple Silicon Mac: band + Magenta RealTime 2 texture (downloads weights once)
+./setup.sh --lite   # any computer with Node 22+: band only, no Magenta
+./start.sh
+```
+
+Open `http://localhost:3000`, click **START THE JAM**, and scan the QR with 1–3 phones
+(1st phone plays harmony, 2nd plays lead, the rest are the crowd). No phones handy? Open
+`http://localhost:3000/join` in a second browser window to play a part yourself.
+
+`start.sh` uses the Magenta texture layer when it's installed and falls back to the
+clock-locked band otherwise. The version submitted to the Audiotool Challenge is tagged
+`submitted-audiotool`; this branch only adds setup, the fallback, and the bundled default
+instrument samples (`app/public/voices_default/`).
+
 **Canonical spec:** [`MASTER_SPEC_V3.md`](MASTER_SPEC_V3.md) ·
 design system: [`DESIGN.md`](DESIGN.md) · app details: [`app/README.md`](app/README.md)
 

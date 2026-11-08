@@ -8,12 +8,24 @@ import { networkInterfaces } from "os";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { spawn } from "child_process";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, cpSync } from "fs";
 import QRCode from "qrcode";
 import { arrangeJam } from "./taste.js";
 import { arrangeFromGenres } from "./genres.js";   // deterministic (sync) genre arrange — for tempo/key at jam start
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Fresh clone: public/voices/ is gitignored (prebakes overwrite it per jam). Seed it from the
+// committed default set — the instrument samples used in the Audiotool Challenge submission —
+// so the band sounds right even without Magenta installed (or with NO_PREBAKE=1).
+{
+  const voicesDir = join(__dirname, "public/voices");
+  const defaults = join(__dirname, "public/voices_default");
+  if (!existsSync(join(voicesDir, "manifest.json")) && existsSync(join(defaults, "manifest.json"))) {
+    cpSync(defaults, voicesDir, { recursive: true });
+    console.log("  [voices] seeded default instrument samples");
+  }
+}
 const PORT = process.env.PORT || 3000;
 
 // --- LAN IP (so phones on the same WiFi can reach the host) ---
