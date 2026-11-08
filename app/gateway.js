@@ -65,7 +65,8 @@ function reapIdle(force = false) {
   let victim = null;
   for (const [code, r] of rooms) {
     if (r.conns > 0) continue;
-    if (now - r.lastSeen > IDLE_MIN * 60000) { killRoom(code); continue; }
+    const limit = r.everConnected ? IDLE_MIN * 60000 : 2 * 60000;   // never-used rooms go fast
+    if (now - r.lastSeen > limit) { killRoom(code); continue; }
     if (force && (!victim || r.lastSeen < rooms.get(victim).lastSeen)) victim = code;
   }
   if (force && victim && rooms.size >= MAX_ROOMS) killRoom(victim);
@@ -77,7 +78,7 @@ function killRoom(code) {
   try { r.child.kill(); } catch {}
   console.log(`[gateway] room ${code} closed (${rooms.size} open)`);
 }
-setInterval(() => reapIdle(false), 60000).unref();
+setInterval(() => reapIdle(false), 30000).unref();
 
 async function createRoom(req) {
   if (rooms.size >= MAX_ROOMS) reapIdle(true);          // evict the stalest empty room if full
@@ -128,6 +129,10 @@ const server = http.createServer(async (req, res) => {
 
   let code = cookieRoom(req);
   if (path === "/new" || (path === "/" && !code)) {
+    // Health checks, link unfurlers and crawlers must not spin up a room process.
+    const ua = req.headers["user-agent"] || "";
+    const isBrowser = /mozilla/i.test(ua) && /text\/html/.test(req.headers.accept || "") && !/bot|crawl|spider|preview|render|uptime|curl|wget/i.test(ua);
+    if (!isBrowser) return page(res, 200, "Jamarama", `<p>Open this page in a browser to start a jam.</p>`);
     const fresh = await createRoom(req);
     if (!fresh) return page(res, 503, "All demo rooms are busy",
       `<p>A few people are jamming right now. Try again in a few minutes.</p>`);
@@ -152,7 +157,7 @@ server.on("upgrade", (req, socket, head) => {
     if (head?.length) up.write(head);
     socket.pipe(up).pipe(socket);
   });
-  r.conns++; r.lastSeen = Date.now();
+  r.conns++; r.everConnected = true; r.lastSeen = Date.now();
   let closed = false;
   const done = () => { if (closed) return; closed = true; r.conns--; r.lastSeen = Date.now(); up.destroy(); socket.destroy(); };
   up.on("error", done); socket.on("error", done); up.on("close", done); socket.on("close", done);
