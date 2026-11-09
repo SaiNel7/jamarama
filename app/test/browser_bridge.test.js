@@ -40,10 +40,11 @@ async function openHost(browser, port) {
 }
 const noteState = (page) => page.$eval("#demo-note", (el) => ({ tex: el.dataset.texture, text: el.textContent }));
 
-test("cloud texture plays in the host browser and fades in after a cold start", { timeout: 90000, skip: !existsSync(CHROME) && "no Chrome" }, async () => {
+for (const fmt of ["opus", "pcm16"])
+test(`cloud texture (${fmt}) plays in the host browser and fades in after a cold start`, { timeout: 90000, skip: !existsSync(CHROME) && "no Chrome" }, async () => {
   const { default: puppeteer } = await import("puppeteer-core");
   const fake = await startFakeTextureServer({ token: "b", readyDelayMs: 4000 });      // 4 s "cold start"
-  const gw = await gateway({ TEXTURE_URL: fake.url, TEXTURE_TOKEN: "b" });
+  const gw = await gateway({ TEXTURE_URL: fake.url, TEXTURE_TOKEN: "b", ...(fmt === "pcm16" ? { TEXTURE_FORMAT: "pcm16" } : {}) });
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: true,
     args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required", "--mute-audio"] });
   try {
@@ -61,7 +62,14 @@ test("cloud texture plays in the host browser and fades in after a cold start", 
 
     await page.waitForFunction(() => window.__jamTexture.stats.chunks > 75, { timeout: 20000 });
     const st = await page.evaluate(() => ({ ...window.__jamTexture.stats, lead: window.__jamTexture.leadSec,
-      ctx: window.Tone.getContext().rawContext.state, fade: window.__jamTexture.fade?.gain.value }));
+      ctx: window.Tone.getContext().rawContext.state, fade: window.__jamTexture.fade?.gain.value,
+      format: window.__jamTexture.format }));
+    assert.equal(fake.sessions[0].msgs[0].format, fmt, "the room asked the GPU for what this browser can decode");
+    assert.equal(st.format, fmt);
+    const mbPerMin = st.bytes / 1e6 / (st.seconds / 60);
+    console.log(`  texture ${fmt}: ${mbPerMin.toFixed(2)} MB/min to the browser`);
+    assert.ok(fmt === "opus" ? mbPerMin < 1.5 : mbPerMin > 10, `${fmt} bytes/min ${mbPerMin}`);
+    assert.equal(st.decodeErrors, 0);
     assert.equal(st.ctx, "running");
     assert.ok(st.lastRms > 0.1, `decoded PCM is the sine (rms ${st.lastRms})`);
     assert.equal(st.fades, 1, "one fade-in when the stream started");
@@ -97,4 +105,39 @@ test("demo note says band only when the texture really is off / failed", { timeo
       } finally { await gw.kill(); }
     }
   } finally { await browser.close(); await fake.close(); }
+});
+
+test("jitter buffer: an underrun grows the buffer, edges are faded, a long gap fades back in", { timeout: 60000, skip: !existsSync(CHROME) && "no Chrome" }, async () => {
+  const { default: puppeteer } = await import("puppeteer-core");
+  const gw = await gateway({});
+  const browser = await puppeteer.launch({ executablePath: CHROME, headless: true,
+    args: ["--no-sandbox", "--autoplay-policy=no-user-gesture-required", "--mute-audio"] });
+  try {
+    const page = await browser.newPage();
+    await page.goto(`http://127.0.0.1:${gw.port}/`, { waitUntil: "load" });
+    const r = await page.evaluate(async () => {
+      const { TextureBridge } = await import("/js/texture_bridge.js");
+      const ctx = new AudioContext({ sampleRate: 48000 });
+      await ctx.resume();
+      const b = new TextureBridge({ ctx: () => ctx, connect: (n) => { n.connect(ctx.destination); return true; } });
+      b.setPrebuffer(200);
+      const frame = () => { const a = new Int16Array(1920 * 2); for (let i = 0; i < a.length; i++) a[i] = Math.round(8000 * Math.sin(i / 7)); return a.buffer; };
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const feed = async (n) => { for (let i = 0; i < n; i++) { b.push(frame()); await sleep(40); } };
+      await feed(15);
+      const lead0 = b.leadSec, under0 = b.stats.underruns;
+      await sleep(900);                              // network stall longer than the buffer → underrun
+      await feed(10);
+      const afterStall = { lead: b.leadSec, under: b.stats.underruns, fades: b.stats.fades };
+      await sleep(2300);                             // the stream went away → next audio fades in again
+      await feed(5);
+      return { lead0, under0, afterStall, fades: b.stats.fades, lead: b.leadSec, gapVal: b.gap.gain.value };
+    });
+    assert.equal(r.under0, 0);
+    assert.equal(r.afterStall.under, 1, "one underrun");
+    assert.ok(Math.abs(r.afterStall.lead - (r.lead0 + 0.1)) < 1e-9, `buffer grew 100 ms (${r.lead0} → ${r.afterStall.lead})`);
+    assert.equal(r.afterStall.fades, 1, "a short stall is not a fresh fade-in");
+    assert.equal(r.fades, 2, "a long gap fades the bed back in");
+    assert.ok(Math.abs(r.lead - r.lead0) < 1e-9, "a fresh stream starts from the advised buffer again");
+  } finally { await browser.close(); await gw.kill(); }
 });

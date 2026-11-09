@@ -237,7 +237,10 @@ async function applyPrebakedVoices() {
 // (the texture engine generates nothing until jam start). Autoplay needs a user gesture, so it
 // starts on the first interaction with the host page; START THE JAM stops it.
 let lobbyAudio = null, lobbyGestured = false;
+let intentSent = false;
 function startLobbyMusic() {
+  // first touch of the lobby = a real visitor who's likely to jam → let the room pre-warm the GPU
+  if (!intentSent) { intentSent = true; bus.send({ type: "host", action: "intent" }); }
   lobbyGestured = true;
   if (lobbyAudio || started) return;
   if (st && st.phase !== "lobby") return;        // don't start during the jam (st null early still = lobby)
@@ -698,10 +701,17 @@ const textureBridge = new TextureBridge({
 });
 window.__jamTexture = textureBridge;                    // debug/test handle (stats only)
 bus.onBinary((buf) => textureBridge.push(buf));
+// Tell the room whether this browser can take the texture as Opus (WebCodecs) — 16× fewer bytes
+// than raw PCM on the visitor's link. Sent in every hello (reconnects) and once right away.
+TextureBridge.opusSupported().then((opus) => {
+  bus.helloExtra.opus = opus;
+  bus.send({ type: "host", action: "caps", payload: { opus } });
+});
 // Texture status from the room server: cloud warming → live (→ failed/stopped), or local/off.
 bus.on("texture", (m) => {
   textureState = { status: m.status, source: m.source || null, fromWs: true };
   if (m.prebufferMs) textureBridge.setPrebuffer(m.prebufferMs + 120);   // + Render↔browser jitter
+  if (m.status === "live") textureBridge.setFormat(m.format || "pcm16", { preSkip: m.preSkip });
   if (m.status === "live") console.log(`[texture] cloud GPU live (${m.gpu || "gpu"}, rtf ${m.rtf})`);
   showDemoNote();
 });

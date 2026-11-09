@@ -3,9 +3,37 @@
 // for the n-th session (so per-room isolation is audible in tests). Records every JSON message.
 import { WebSocketServer } from "ws";
 import http from "node:http";
+import { execFileSync } from "node:child_process";
+
+/** Raw Opus packets (20 ms, 48 kHz stereo) of a sine, via ffmpeg → Ogg → packets. null without ffmpeg/libopus. */
+let opusCache = null;
+export function opusSinePackets(hz = 440, seconds = 2, kbps = 96) {
+  if (opusCache?.key === `${hz}/${seconds}/${kbps}`) return opusCache.val;
+  let ogg;
+  try {
+    ogg = execFileSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", `aevalsrc=0.366*sin(2*PI*${hz}*t):s=48000:d=${seconds}`,
+      "-ac", "2", "-c:a", "libopus", "-b:a", `${kbps}k`, "-frame_duration", "20", "-f", "ogg", "-"], { maxBuffer: 1 << 26 });
+  } catch { return null; }
+  const packets = [];
+  let pos = 0, cur = [];
+  while (pos + 27 <= ogg.length && ogg.toString("latin1", pos, pos + 4) === "OggS") {
+    const nseg = ogg[pos + 26], lacing = ogg.subarray(pos + 27, pos + 27 + nseg);
+    let body = pos + 27 + nseg;
+    for (const l of lacing) {
+      cur.push(ogg.subarray(body, body + l)); body += l;
+      if (l < 255) { packets.push(Buffer.concat(cur)); cur = []; }
+    }
+    pos = body;
+  }
+  const head = packets.shift(); packets.shift();               // OpusHead, OpusTags
+  const val = { packets, preSkip: head.readUInt16LE(10) };
+  opusCache = { key: `${hz}/${seconds}/${kbps}`, val };
+  return val;
+}
 
 export function startFakeTextureServer({ token = "tok", readyDelayMs = 0, rtf = 3.2, baseHz = 220,
-                                         reject = null, prebufferMs = 320, pitchFrom = "notes" } = {}) {
+                                         reject = null, prebufferMs = 320, pitchFrom = "notes",
+                                         opus = true } = {}) {
   const sessions = [];
   const server = http.createServer((req, res) => {
     if (req.url === "/healthz") { fake.healthz++; res.writeHead(200, { "content-type": "application/json" }); return res.end('{"ok":true}'); }
@@ -32,6 +60,28 @@ export function startFakeTextureServer({ token = "tok", readyDelayMs = 0, rtf = 
       s.msgs.push(m);
       if (m.type === "start") {
         notes = m.notes;
+        if (m.format === "opus" && !opus) {                   // a server without libopus
+          ws.send(JSON.stringify({ type: "error", code: "unsupported_format", message: "opus encoder unavailable", fatal: true }));
+          return ws.close(4400);
+        }
+        if (m.format === "opus") {                            // a 440 Hz sine as raw Opus packets, 20 ms each
+          const { packets, preSkip } = opusSinePackets(440, 2, Math.round((m.opus?.bitrate || 96000) / 1000));
+          setTimeout(() => {
+            if (ws.readyState !== ws.OPEN) return;
+            ws.send(JSON.stringify({ type: "ready", protocol: 1, session_id: `fake${s.idx}`, model: "mrt2_small",
+              engine: "fake", backend: "sine", device: "cpu", gpu: "FakeGPU", sample_rate: 48000, channels: 2,
+              format: "opus", packet_ms: 20, frame_ms: 40, rtf, prebuffer_ms: prebufferMs,
+              opus: { sample_rate: 48000, channels: 2, bitrate: m.opus?.bitrate || 96000, packet_ms: 20, pre_skip: preSkip } }));
+            const t0 = Date.now();
+            timer = setInterval(() => {
+              while (s.framesSent * 20 < Date.now() - t0 + prebufferMs) {
+                ws.send(packets[s.framesSent % packets.length], { binary: true });
+                s.framesSent++;
+              }
+            }, 20);
+          }, readyDelayMs);
+          return;
+        }
         setTimeout(() => {
           if (ws.readyState !== ws.OPEN) return;
           ws.send(JSON.stringify({ type: "ready", protocol: 1, session_id: `fake${s.idx}`, model: "mrt2_small",

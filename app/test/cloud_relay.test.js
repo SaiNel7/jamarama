@@ -69,7 +69,13 @@ test("server.js: jam start opens a cloud session, conditioning follows the room,
     assert.equal(info.texture, "standby"); assert.equal(info.textureSource, "cloud");
     const h = await host(`ws://127.0.0.1:${srv.port}`);
     await until(() => texStatuses(h).includes("standby"), 3000, "standby status");
+    await sleep(500);
+    assert.equal(fake.healthz, 0, "merely opening the host page does not boot a GPU");
+    send(h, { type: "host", action: "intent" });                 // first gesture in the lobby
     await until(() => fake.healthz >= 1, 3000, "lobby prewarm hit /healthz");
+    send(h, { type: "host", action: "intent" });                 // repeated intent → no second boot
+    await sleep(300);
+    assert.equal(fake.healthz, 1, "pre-warm is debounced");
     assert.equal(fake.sessions.length, 0, "no GPU session during the lobby");
 
     send(h, { type: "host", action: "start" });
@@ -185,4 +191,55 @@ test("gateway: each visitor room gets its own cloud session; audio never crosses
     const n = hb.bin.length; await sleep(500); assert.ok(hb.bin.length > n, "room B keeps streaming");
     hb.ws.close();
   } finally { await gw.kill(); await fake.close(); }
+});
+
+test("server.js: opus when the host can decode it, pcm16 fallback when the GPU can't encode it; phone join pre-warms", { timeout: 40000 }, async () => {
+  const fake = await startFakeTextureServer({ token: "t", opus: false });     // GPU service without libopus
+  const srv = await launch("server.js", { TEXTURE_URL: fake.url, TEXTURE_TOKEN: "t" });
+  try {
+    const h = await new Promise((resolve) => {                                  // an Opus-capable host tab
+      const ws = new WebSocket(`ws://127.0.0.1:${srv.port}`);
+      const o = { ws, json: [], bin: [] };
+      ws.on("open", () => { ws.send(JSON.stringify({ type: "hello", role: "host", sid: "oh", opus: true })); resolve(o); });
+      ws.on("message", (d, isBin) => { if (isBin) o.bin.push(Buffer.from(d)); else o.json.push(JSON.parse(d)); });
+    });
+    await sleep(300);
+    assert.equal(fake.healthz, 0);
+    const phone = new WebSocket(`ws://127.0.0.1:${srv.port}`);
+    await new Promise((r) => phone.on("open", r));
+    phone.send(JSON.stringify({ type: "hello", role: "auto", sid: "p1" }));
+    await until(() => fake.healthz === 1, 3000, "phone join pre-warms the GPU");
+
+    send(h, { type: "host", action: "start" });
+    await until(() => fake.sessions.length >= 2, 6000, "retry after unsupported_format");
+    assert.equal(fake.sessions[0].msgs[0].format, "opus", "asked for opus first");
+    assert.equal(fake.sessions[0].msgs[0].opus.bitrate, 96000);
+    assert.equal(fake.sessions[1].msgs[0].format, "pcm16", "fell back to pcm16 right away");
+    const live = await until(() => h.json.find((m) => m.type === "texture" && m.status === "live"), 5000, "live");
+    assert.equal(live.format, "pcm16");
+    await until(() => h.bin.length >= 10, 4000, "pcm frames");
+    assert.ok(h.bin.every((b) => b.length === 7680));
+    phone.close();
+  } finally { await srv.kill(); await fake.close(); }
+});
+
+test("server.js: opus session relays raw packets, an order of magnitude fewer bytes than pcm16", { timeout: 30000 }, async () => {
+  const fake = await startFakeTextureServer({ token: "t" });
+  const srv = await launch("server.js", { TEXTURE_URL: fake.url, TEXTURE_TOKEN: "t" });
+  try {
+    const h = await host(`ws://127.0.0.1:${srv.port}`);
+    send(h, { type: "host", action: "caps", payload: { opus: true } });
+    await sleep(100);
+    send(h, { type: "host", action: "start" });
+    const live = await until(() => h.json.find((m) => m.type === "texture" && m.status === "live"), 5000, "live");
+    assert.equal(live.format, "opus");
+    assert.equal(live.preSkip, 312);
+    const t0 = Date.now(), n0 = h.bin.length;
+    await sleep(3000);
+    const got = h.bin.slice(n0), secs = (Date.now() - t0) / 1000;
+    const mbPerMin = got.reduce((a, b) => a + b.length, 0) / 1e6 / (secs / 60);
+    console.log(`  opus relay: ${got.length} packets in ${secs.toFixed(1)} s, ${mbPerMin.toFixed(2)} MB/min (pcm16: 11.52)`);
+    assert.ok(got.length > 120 && got.every((b) => b.length < 1500), "20 ms raw packets");
+    assert.ok(mbPerMin < 1.5);
+  } finally { await srv.kill(); await fake.close(); }
 });

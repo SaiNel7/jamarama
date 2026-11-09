@@ -217,12 +217,29 @@ function broadcastRoster(exceptId = null) {
 // Both texture sources (the local MLX engine over WS, or the cloud session) land here and go to
 // every host tab, where the WebAudio bridge plays them into the bus graph. Backpressure: if a
 // host socket is backed up (slow link), drop frames rather than queue unbounded memory.
-const PCM_BACKLOG = 256 * 1024;   // ~1.3 s of 48 kHz stereo int16
+// The backlog limit is ~1.3 s of audio in either format (pcm16 192 KB/s, opus ~12 KB/s).
+const PCM_BACKLOG = 256 * 1024, OPUS_BACKLOG = 24 * 1024;
 function relayPcm(buf) {
+  const limit = cloud?.ws && cloud.format === "opus" ? OPUS_BACKLOG : PCM_BACKLOG;
   for (const h of clients.values())
-    if (h.role === "groove" && h.ws.readyState === h.ws.OPEN && h.ws.bufferedAmount < PCM_BACKLOG) {
+    if (h.role === "groove" && h.ws.readyState === h.ws.OPEN) {
+      if (h.ws.bufferedAmount >= limit) continue;          // slow link: drop, never queue unbounded
       try { h.ws.send(buf, { binary: true }); } catch {}
     }
+}
+// Stream format for the next cloud session: Opus when every connected host tab said it can decode
+// it (WebCodecs, reported in hello/caps), else raw pcm16. TEXTURE_FORMAT=pcm16 forces raw.
+function textureFormat() {
+  if (process.env.TEXTURE_FORMAT === "pcm16") return "pcm16";
+  const hosts = [...clients.values()].filter(isHost);
+  return hosts.length && hosts.every((h) => h.opus) ? "opus" : "pcm16";
+}
+// Pre-warm the GPU only on a sign of intent (the host touched the lobby, or a phone joined) — not
+// for every page view: a bounce visitor used to boot a GPU container (cold start + ~2 min warm
+// time) for nothing. At most one pre-warm per ~90 s per room (CloudTexture.prewarm).
+function prewarmOnIntent(why) {
+  if (!cloud.configured || state.phase !== "lobby" || process.env.TEXTURE_PREWARM === "0") return;
+  if (cloud.prewarm()) console.log(`  [texture-cloud] pre-warming the GPU (${why})`);
 }
 
 // --- cloud texture (TEXTURE_URL + TEXTURE_TOKEN) ---
@@ -245,7 +262,7 @@ let lastActivity = Date.now();
 function touchActivity() {
   lastActivity = Date.now();
   if (cloud.configured && state.phase === "jam" && hostCount() > 0 && !cloud.want && cloud.status === "stopped")
-    cloud.start(state);
+    cloud.start(state, { format: textureFormat() });
 }
 if (cloud.configured) setInterval(() => {
   if (cloud.want && Date.now() - lastActivity > TEXTURE_IDLE_MS) cloud.stop("room idle");
@@ -412,6 +429,8 @@ wss.on("connection", (ws, req) => {
           clients.set(id, c);
           console.log(`+ ${c.role} #${id} (${ip}) (${who()})`);
         }
+        if (c.role === "groove" && msg.opus != null) c.opus = Boolean(msg.opus);
+        if (!prev && isPhone(c)) prewarmOnIntent("a phone joined");
         if (sid) sessions.set(sid, c);
         send(ws, { type: "welcome", id, role: c.role, color: c.color, state, roster: roster(), crowdCount: crowdCount() });
         broadcastRoster(id);
@@ -442,6 +461,11 @@ wss.on("connection", (ws, req) => {
       }
       // Host pad / tempo / clock-driven chord advance + lobby room/key/tempo edits.
       case "host": {
+        if (msg.action === "caps") {                      // what this host tab can decode
+          const c = clients.get(id); if (c) c.opus = Boolean(msg.payload?.opus);
+          break;
+        }
+        if (msg.action === "intent") { prewarmOnIntent("host interacted"); break; }
         if (msg.action !== "chord") touchActivity();     // chord = the clock advancing, not a person
         if (msg.action === "groove") state.groove = msg.payload;
         if (msg.action === "tempo") {
@@ -494,7 +518,7 @@ wss.on("connection", (ws, req) => {
           // built-in synths all jam (A/B the baked voices, or save GPU on weak hosts).
           if (!process.env.NO_PREBAKE) prebakeFromTastes();
           else { console.log("  [prebake] disabled (NO_PREBAKE=1) — default instrument samples"); useDefaultVoices(); }
-          if (cloud.configured && hostCount() > 0) cloud.start(state);   // GPU session; fades in when ready
+          if (cloud.configured && hostCount() > 0) cloud.start(state, { format: textureFormat() });   // GPU session; fades in when ready
         }
         broadcastState();
         break;
@@ -724,8 +748,7 @@ function onHostConnect() {
   if (textureGrace) { clearTimeout(textureGrace); textureGrace = null; }
   if (cloud.configured) {
     touchActivity();
-    if (state.phase === "jam") cloud.start(state);
-    else if (process.env.TEXTURE_PREWARM !== "0") cloud.prewarm();
+    if (state.phase === "jam") cloud.start(state, { format: textureFormat() });
     return;
   }
   startTexture();
