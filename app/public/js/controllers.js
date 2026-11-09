@@ -63,7 +63,7 @@ function onBeat(m) {
 // server is the source of truth — we claim optimistically and the roster echo
 // confirms (or reverts, if someone else grabbed it first).
 const AVATARS = ["pickle","duck","frog","dog","cat","rocker","alien","cow","pig","rasta","cantor","baba"];
-const avImg = (a) => a ? `<img src="/assets/pfps/${a}.png" alt="${a}" draggable="false">` : "";
+const avImg = (a) => a ? `<img src="/assets/pfps/${a}.webp" alt="${a}" draggable="false">` : "";
 let myName = "", myAvatar = "", amReady = false;
 let profileTimer = null;
 function sendProfile() {
