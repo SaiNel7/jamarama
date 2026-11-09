@@ -178,9 +178,39 @@ function broadcast(obj, exceptId = null) {
     if (c.id !== exceptId && c.ws.readyState === c.ws.OPEN) c.ws.send(msg);
   }
 }
+// Targeted fan-out: only the clients that actually consume a message type get it.
+//   beat    → phones only (the host generates its own clock; the texture engine ignores beats)
+//   control → host tabs only (phones never read other phones' raw controls; they follow `state`)
+const isHost = (c) => c.role === "groove";
+const isPhone = (c) => c.role !== "groove" && c.role !== "texture";
+function broadcastTo(pred, obj) {
+  const msg = JSON.stringify(obj);
+  for (const c of clients.values()) if (pred(c) && c.ws.readyState === c.ws.OPEN) c.ws.send(msg);
+}
+// State fan-out is COALESCED: an isolated change goes out immediately (leading edge), but a burst
+// (two crowd phones holding "energy" = 20 changes/s, plus the 1 Hz decay) is folded into at most
+// one full-state message per STATE_MIN_MS, always ending with the latest state (trailing edge).
+// The roster rides along only when it actually changed (it also has its own `roster` message).
+const STATE_MIN_MS = +(process.env.STATE_MIN_MS ?? 100);
+let stateTimer = null, lastStateAt = 0, lastRosterJson = "";
 function broadcastState() {
-  broadcast({ type: "state", state, roster: roster(), crowdCount: crowdCount() });
+  if (stateTimer) return;                                // a trailing flush is already scheduled
+  const wait = STATE_MIN_MS - (Date.now() - lastStateAt);
+  if (wait > 0) { stateTimer = setTimeout(() => { stateTimer = null; flushState(); }, wait); return; }
+  flushState();
+}
+function flushState() {
+  lastStateAt = Date.now();
+  const r = roster(), rj = JSON.stringify(r);
+  const msg = { type: "state", state, crowdCount: crowdCount() };
+  if (rj !== lastRosterJson) { msg.roster = r; lastRosterJson = rj; }
+  broadcast(msg);
   if (state.phase === "jam") cloud.update(state);   // cloud texture follows the room (diffed + coalesced)
+}
+function broadcastRoster(exceptId = null) {
+  const r = roster();
+  lastRosterJson = JSON.stringify(r);
+  broadcast({ type: "roster", roster: r, crowdCount: crowdCount() }, exceptId);
 }
 
 // --- MRT2 texture PCM → host browser(s) ---
@@ -333,8 +363,10 @@ const wss = new WebSocketServer({ server });
 wss.on("connection", (ws, req) => {
   let id = null;
   const ip = req.headers["cf-connecting-ip"] || req.socket.remoteAddress; // real phone IP through the tunnel
+  ws._openedAt = Date.now();
 
   ws.on("message", (raw, isBinary) => {
+    ws._lastPong = Date.now();                     // any traffic proves the socket is alive
     // Binary frames = streamed MRT2 texture PCM from the texture engine → forward to the host
     // browser, where it joins the WebAudio bus graph (duck + limiter + recorded export).
     if (isBinary) {
@@ -346,6 +378,9 @@ wss.on("connection", (ws, req) => {
     try { msg = JSON.parse(raw); } catch { return; }
 
     switch (msg.type) {
+      // App-level keepalive: browsers can't see WS protocol pings, so clients probe with this
+      // (after waking from sleep / a network change) and reconnect if no pong comes back.
+      case "ping": send(ws, { type: "pong", t: msg.t }); break;
       case "hello": {
         const sid = typeof msg.sid === "string" ? msg.sid.slice(0, 64) : null;
         const prev = sid ? sessions.get(sid) : null;
@@ -372,7 +407,7 @@ wss.on("connection", (ws, req) => {
         }
         if (sid) sessions.set(sid, c);
         send(ws, { type: "welcome", id, role: c.role, color: c.color, state, roster: roster(), crowdCount: crowdCount() });
-        broadcast({ type: "roster", roster: roster(), crowdCount: crowdCount() }, id);
+        broadcastRoster(id);
         if (c.role === "groove") {
           send(ws, { type: "texture", ...textureStatus });
           onHostConnect();                          // host tab opened → bring the texture engine up
@@ -384,7 +419,7 @@ wss.on("connection", (ws, req) => {
       // Host clock → fan out to phones so they pulse in time.
       case "beat": {
         state.bar = msg.bar; state.beat = msg.beat;
-        broadcast({ type: "beat", bar: msg.bar, beat: msg.beat, sub: msg.sub });
+        broadcastTo(isPhone, { type: "beat", bar: msg.bar, beat: msg.beat, sub: msg.sub });
         break;
       }
       // Phone control → mutate state + tell everyone (incl. host engine).
@@ -393,7 +428,7 @@ wss.on("connection", (ws, req) => {
       case "control": {
         touchActivity();
         applyControl(msg, id);
-        broadcast({ type: "control", from: id, role: clients.get(id)?.role, action: msg.action,
+        broadcastTo(isHost, { type: "control", from: id, role: clients.get(id)?.role, action: msg.action,
                     payload: msg.payload, lat: Math.round((clients.get(id)?.rtt || 0) / 2) });
         broadcastState();
         break;
@@ -462,6 +497,7 @@ wss.on("connection", (ws, req) => {
 
   // RTT measurement: the pinger below stamps _pingAt before each ws.ping().
   ws.on("pong", () => {
+    ws._lastPong = Date.now();
     const c = id != null ? clients.get(id) : null;
     if (c && c.ws === ws && c._pingAt) c.rtt = Date.now() - c._pingAt;
   });
@@ -473,7 +509,7 @@ wss.on("connection", (ws, req) => {
     const c = clients.get(id);
     clients.delete(id);
     console.log(`- ${c?.role} #${id} (${who()})`);
-    broadcast({ type: "roster", roster: roster(), crowdCount: crowdCount() });
+    broadcastRoster();
     // A leaving player's prompt leaves the blend — but only if they're really gone.
     // Flaky links resume within ~1s (same id); without the grace window every blip
     // would yank their prompt out of the texture conditioning and morph the bed.
@@ -599,11 +635,24 @@ async function recomputeTaste() {
 // Per-client round-trip measurement (WS ping/pong). Phones often connect through the
 // cloudflare tunnel (80–250ms RTT) — enough to smear a played note 1–2 sixteenths off
 // the grid if the host quantizes by arrival time. Control relays carry rtt/2 as `lat`.
+// The same pings reap DEAD sockets: a phone that slept or switched WiFi→cellular often leaves a
+// half-open TCP connection that never closes on its own. It would keep receiving (buffering) every
+// broadcast forever, and through the gateway it would keep the room "occupied". No pong for
+// DEAD_AFTER_MS → terminate (the client's own watchdog reconnects and resumes the same player).
+const PING_MS = +(process.env.PING_MS || 5000);
+const DEAD_AFTER_MS = +(process.env.DEAD_AFTER_MS || 3 * PING_MS + 1000);
 setInterval(() => {
+  const now = Date.now();
   for (const c of clients.values()) {
-    if (c.ws.readyState === c.ws.OPEN) { c._pingAt = Date.now(); try { c.ws.ping(); } catch {} }
+    if (c.ws.readyState !== c.ws.OPEN) continue;
+    if (now - (c.ws._lastPong ?? c.ws._openedAt ?? now) > DEAD_AFTER_MS) {
+      console.log(`  [ws] ${c.role} #${c.id} stopped answering pings — dropping the dead socket`);
+      try { c.ws.terminate(); } catch {}
+      continue;
+    }
+    c._pingAt = now; try { c.ws.ping(); } catch {}
   }
-}, 5000);
+}, PING_MS).unref();
 
 // Crowd energy decays slowly toward calm so "hold to raise" feels live.
 setInterval(() => {

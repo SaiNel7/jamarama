@@ -17,9 +17,12 @@ const ROLE_ORDER = ["groove", "harmony", "lead", "crowd"];
 const ROLE_LETTER = { groove: "G", harmony: "H", lead: "L", crowd: "C" };
 const ROLE_COLOR = { groove: "#F5B82E", harmony: "#1BA88A", lead: "#F4533A", crowd: "#9B7BE6" };
 
-bus.on("welcome", (m) => { st = m.state; roster = m.roster || []; paintAll(); });
-bus.on("state", (m) => { st = m.state; roster = m.roster || roster; paintAll(); if (lobbyGestured) startLobbyMusic(); });
-bus.on("roster", (m) => { roster = m.roster; if (st) st.crowdCount = m.crowdCount; paintRoster(); });
+// crowdCount travels next to the state (not inside it) — carry it onto st so the "voting" readout
+// shows the real crowd size instead of resetting to 0 on every state message.
+const withCount = (m, prev) => { const s = m.state; s.crowdCount = m.crowdCount ?? prev?.crowdCount ?? 0; return s; };
+bus.on("welcome", (m) => { st = withCount(m, st); roster = m.roster || []; onStateAudio(); schedulePaint(); });
+bus.on("state", (m) => { st = withCount(m, st); roster = m.roster || roster; onStateAudio(); schedulePaint(); if (lobbyGestured) startLobbyMusic(); });
+bus.on("roster", (m) => { roster = m.roster; if (st) st.crowdCount = m.crowdCount; schedulePaint(); });
 bus.on("beat", () => {}); // host generates its own beat locally
 bus.on("control", (m) => {
   if (m.action === "note") onLeadNote(m.payload, m.lat || 0);
@@ -769,13 +772,38 @@ document.getElementById("lb-tempo-box").addEventListener("wheel", (e) => {
   sendTempo((+lbTempo.value || st?.tempo || 124) + (e.deltaY < 0 ? 1 : -1));
 }, { passive: false });
 
-function paintAll() {
-  paintInfo(); paintRoster();
+// State messages arrive up to ~10×/s during a busy jam. The audio-relevant bits apply right away
+// (onStateAudio — also while the tab is hidden); the DOM repaint is coalesced to at most one per
+// animation frame (schedulePaint), and each panel re-renders only when ITS inputs changed. The old
+// path rebuilt every panel (and force-laid-out the piano roll) on every message, on the same main
+// thread that runs the Tone.js scheduler.
+function onStateAudio() {
   if (st?.phase && st.phase !== "lobby") stopLobbyMusic();   // jam started → ensure the lobby track is off
+  if (started && st?.tempo && Tone.getTransport().bpm.value !== st.tempo)
+    Tone.getTransport().bpm.value = st.tempo;                 // keep the clock on the genre/host tempo
+}
+let paintQueued = false;
+function schedulePaint() {
+  if (paintQueued) return;
+  paintQueued = true;
+  requestAnimationFrame(() => { paintQueued = false; paintAll(); });
+}
+const sig = {};                                               // last-painted input signature per panel
+function changed(name, ...inputs) {
+  const k = JSON.stringify(inputs);
+  if (sig[name] === k) return false;
+  sig[name] = k; return true;
+}
+function paintAll() {
+  paintInfo();
+  if (changed("roster", roster)) paintRoster();
+  onStateAudio();
   if (document.getElementById("console").hidden) return;
-  if (started && st?.tempo) Tone.getTransport().bpm.value = st.tempo;   // keep the clock on the genre/host tempo
   if (leadKeysKey !== (st?.key || "A") + (st?.scale || "major")) buildLeadKeys();   // re-stick keys to a new key
-  paintWheel(); paintPoll(); paintMix(); renderRoll(); paintLeadFromState();
+  if (changed("wheel", st?.palette, st?.progression, st?.progressionQuals, st?.chord, st?.key, st?.scale)) paintWheel();
+  if (changed("poll", st?.mood, st?.energy, st?.crowdCount)) { paintPoll(); paintMix(); }
+  if (changed("roll", st?.schedule, st?.key, st?.scale)) renderRoll();
+  paintLeadFromState();
 }
 function paintInfo() {
   if (!st) return;
@@ -861,6 +889,7 @@ function setupReadout() {
 }
 
 function buildConsole() {
+  for (const k in sig) delete sig[k];                // fresh DOM → every panel repaints once
   drawWaves();
   buildWheel();
   buildRoll();
@@ -958,12 +987,20 @@ function buildRoll() {
       <div class="rlabel ${r.blk ? "blk" : "wht"}">${r.n}</div></div>`).join("") +
     [1, 2, 3].map((b) => `<div class="barline" style="left:calc(${LABELW}px + ${b / BARS} * (100% - ${LABELW}px))"></div>`).join("") +
     [1, 2, 3, 4].map((b) => `<div class="barnum" style="left:calc(${LABELW}px + ${(b - 1) / BARS} * (100% - ${LABELW}px) + 8px)">BAR ${b}</div>`).join("") +
-    `<div class="playhead" id="playhead" style="left:${LABELW}px"></div>`;
+    `<div class="playhead" id="playhead" style="left:${LABELW}px"></div>` +
+    `<div class="notelayer" id="notelayer" style="position:absolute;inset:0"></div>`;
+  delete sig.roll;
 }
 function renderRoll() {
-  const roll = document.getElementById("roll"); if (!roll || !roll.querySelector(".rrow")) return;
-  roll.querySelectorAll(".note").forEach((n) => n.remove());
-  const rh = roll.clientHeight / ROWS.length;
+  const roll = document.getElementById("roll"), layer = document.getElementById("notelayer");
+  if (!roll || !layer) return;
+  // read the geometry BEFORE touching the DOM (no forced synchronous layout), then swap all the
+  // note blocks in with one innerHTML write.
+  const rollW = roll.clientWidth, rollH = roll.clientHeight;
+  const rh = rollH / ROWS.length;
+  const html = [];
+  const addNote = (_r, cls, x, y, w, h, label) => html.push(
+    `<div class="note ${cls}" style="left:${x}px;top:${y}px;width:${w}px;height:${h}px">${esc(label)}</div>`);
   const pcOf = (m) => ((m % 12) + 12) % 12;
   const rowOf = (used, pcs, region) => { for (let i = 0; i < ROWS.length; i++) if (ROWS[i].region === region && pcs.includes(pcOf(ROWS[i].m)) && !used.has(i)) { used.add(i); return i; } return -1; };
   // harmony: render the SAME schedule the audio plays (effectiveSchedule — drawn progression, or
@@ -972,7 +1009,7 @@ function renderRoll() {
   // rotated chords by progIdx every bar, so the blocks shifted out from under the playhead.)
   const sched = effectiveSchedule();
   if (sched && sched.length) {
-    const beatW = (roll.clientWidth - LABELW) / sched.length;     // one slot per beat
+    const beatW = (rollW - LABELW) / sched.length;                 // one slot per beat
     for (let i = 0; i < sched.length;) {
       const slot = sched[i], key = slot.label || slot.roman;
       let run = 1; while (i + run < sched.length && (sched[i + run].label || sched[i + run].roman) === key) run++;
@@ -987,26 +1024,22 @@ function renderRoll() {
   // lead = the GENERATED loop (playLoop), in the upper (lead) rows, mapped across the readout
   // by loop position. (The original input you played is shown in the LEAD panel on the right.)
   if (playLoop.length && loopLen) {
-    const W = roll.clientWidth - LABELW;
+    const W = rollW - LABELW;
     playLoop.forEach((n) => {
       let ri = ROWS.findIndex((r) => r.region === "lead" && pcOf(r.m) === pcOf(n.p));
       if (ri < 0) ri = ROWS.findIndex((r) => r.region === "lead");
       addNote(roll, "l", LABELW + (n.t / loopLen) * W, ri * rh + 4, Math.max(14, (n.d / loopLen) * W), rh - 8, "");
     });
   }
+  layer.innerHTML = html.join("");
   // mirror the same data into the sheet-music view when it's the active readout
   if (viewMode === "sheet") notation?.render(st, playLoop, loopLen, progIdx);
 }
-function addNote(roll, cls, x, y, w, h, label) {
-  const d = document.createElement("div");
-  d.className = "note " + cls; d.style.cssText = `left:${x}px;top:${y}px;width:${w}px;height:${h}px`;
-  d.textContent = label; roll.appendChild(d);
-}
 // step = 16th-note position within the readout window (0 .. BARS*16). Linear mapping over the
 // note area, matching the sheet view's mapping so the two playheads stay musically in sync.
-function movePlayhead(step) {
-  const roll = document.getElementById("roll"), ph = document.getElementById("playhead"); if (!ph) return;
-  ph.style.left = (LABELW + (step / (BARS * 16)) * (roll.clientWidth - LABELW)) + "px";
+function movePlayhead(step) {                       // pure CSS position: no layout read per 16th
+  const ph = document.getElementById("playhead"); if (!ph) return;
+  ph.style.left = `calc(${LABELW}px + ${step / (BARS * 16)} * (100% - ${LABELW}px))`;
 }
 function flashRoll() {
   const roll = document.getElementById("roll"); if (!roll) return;
@@ -1142,15 +1175,22 @@ const WAVE_BANDS = [[20, 200], [200, 800], [800, 3000], [3000, 13000]];   // Hz 
 const waveAmp = [0, 0, 0, 0];      // temporally-smoothed amplitude per line
 let wavePhase = 0;
 
-// Average normalized magnitude of the FFT bins inside [lo,hi) Hz (0..~1).
-function bandLevel(buf, sr, lo, hi) {
-  const n = buf.length, nyq = sr / 2; let s = 0, c = 0;
-  for (let i = 0; i < n; i++) {
-    const hz = i * nyq / n;
-    if (hz >= lo && hz < hi) { s += Math.min(1, Math.max(0, (buf[i] + 100) / 70)); c++; }
-  }
-  return c ? s / c : 0;
+// Average normalized magnitude of the FFT bins inside [lo,hi) Hz (0..~1). The bin range for each
+// band is computed once (bandBins) instead of scanning all bins for every band on every frame.
+function bandBins(n, sr, lo, hi) {
+  const nyq = sr / 2;
+  let a = Math.ceil(lo * n / nyq), b = Math.ceil(hi * n / nyq);   // bins i with lo <= i*nyq/n < hi
+  while (a > 0 && (a - 1) * nyq / n >= lo) a--;
+  while (a * nyq / n < lo) a++;
+  while (b > a && (b - 1) * nyq / n >= hi) b--;
+  return [Math.min(a, n), Math.min(b, n)];
 }
+function binLevel(buf, [a, b]) {
+  let s = 0;
+  for (let i = a; i < b; i++) s += Math.min(1, Math.max(0, (buf[i] + 100) / 70));
+  return b > a ? s / (b - a) : 0;
+}
+function bandLevel(buf, sr, lo, hi) { return binLevel(buf, bandBins(buf.length, sr, lo, hi)); }
 // Smooth SVG path through points via quadratic curves to midpoints (no jagged segments).
 function smoothPath(pts) {
   let d = `M${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
@@ -1169,13 +1209,19 @@ function startWaves() {
   masterBus.connect(fftAnalyser);                        // passive tap (doesn't alter the audio)
   setupMiniViz();
   const N = 22, W = 1200, sr = Tone.getContext().rawContext.sampleRate;
+  // Four persistent <path>s whose `d` is updated per frame (rebuilding the SVG via innerHTML 60×/s
+  // re-parsed the markup and re-created the nodes every frame on the audio scheduler's thread).
+  svg.innerHTML = WAVE_COLS.map((c) =>
+    `<path fill="none" stroke="${c}" stroke-width="6" opacity="0.45" stroke-linecap="round"/>`).join("");
+  const paths = [...svg.querySelectorAll("path")];
+  const bins = WAVE_BANDS.map(([lo, hi]) => bandBins(fftAnalyser.size, sr, lo, hi));
+  const cons = document.getElementById("console");
   const draw = () => {
-    const cons = document.getElementById("console");
     if (cons && !cons.hidden) {
       const buf = fftAnalyser.getValue();
       wavePhase += 0.02;                                 // gentle drift so the lines flow
-      svg.innerHTML = WAVE_COLS.map((c, li) => {
-        const lvl = bandLevel(buf, sr, WAVE_BANDS[li][0], WAVE_BANDS[li][1]);
+      WAVE_COLS.forEach((c, li) => {
+        const lvl = binLevel(buf, bins[li]);
         const target = lvl * (300 + li * 50);            // jumps high on loud bands
         waveAmp[li] = waveAmp[li] * 0.8 + target * 0.2;  // smooth the amplitude over time
         const amp = waveAmp[li], cyc = 1.5 + li * 0.5;   // a few smooth cycles across the screen
@@ -1185,8 +1231,8 @@ function startWaves() {
           const y = WAVE_Y[li] + Math.sin((i / N) * Math.PI * 2 * cyc + wavePhase + li * 1.3) * amp;
           pts.push([x, y]);
         }
-        return `<path d="${smoothPath(pts)}" fill="none" stroke="${c}" stroke-width="6" opacity="0.45" stroke-linecap="round"/>`;
-      }).join("");
+        paths[li].setAttribute("d", smoothPath(pts));
+      });
       drawMini(buf, sr);
     }
     requestAnimationFrame(draw);
@@ -1196,7 +1242,7 @@ function startWaves() {
 
 // Mini corner visualizer (bottom-left): a compact spectrum. Two modes — YELLOW idle, RED while the
 // host is recording a take (recorder.recording) — so you can see at a glance that a take is rolling.
-let miniCanvas = null, miniCtx = null;
+let miniCanvas = null, miniCtx = null, miniBins = null;
 function setupMiniViz() {
   if (miniCanvas) return;
   miniCanvas = document.createElement("canvas");
@@ -1213,10 +1259,11 @@ function drawMini(buf, sr) {
   const col = rec ? "#F4533A" : "#F5B82E";              // red recording · yellow idle
   const W = miniCanvas.width, H = miniCanvas.height, pad = 10, NB = 30;
   const bw = (W - 2 * pad) / NB;
+  miniBins ||= Array.from({ length: NB }, (_, b) =>       // log-spaced bars 40 Hz → ~16 kHz
+    bandBins(buf.length, sr, 40 * Math.pow(1.225, b), Math.min(40 * Math.pow(1.225, b + 1), sr / 2)));
   miniCtx.clearRect(0, 0, W, H);
-  for (let b = 0; b < NB; b++) {                         // log-spaced bars 40 Hz → ~16 kHz
-    const lo = 40 * Math.pow(1.225, b), hi = 40 * Math.pow(1.225, b + 1);
-    const lvl = bandLevel(buf, sr, lo, Math.min(hi, sr / 2));
+  for (let b = 0; b < NB; b++) {
+    const lvl = binLevel(buf, miniBins[b]);
     const h = Math.max(3, lvl * (H - 2 * pad));
     miniCtx.fillStyle = col;
     miniCtx.fillRect(pad + b * bw + 1, H - pad - h, bw - 2, h);
