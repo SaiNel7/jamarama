@@ -259,6 +259,11 @@ let textureStatus = cloud.configured ? { status: "standby", source: "cloud" }
 // TEXTURE_IDLE_MIN → close the session; the next interaction reopens it (texture fades back in).
 const TEXTURE_IDLE_MS = 60000 * +(process.env.TEXTURE_IDLE_MIN || 8);
 let lastActivity = Date.now();
+// Under the demo gateway, report how long nobody has touched this room (it reclaims abandoned
+// rooms only when every room is taken and a new visitor arrives).
+if (process.send) setInterval(() => {
+  try { process.send({ type: "activity", idleMs: Date.now() - lastActivity }); } catch {}
+}, +(process.env.ACTIVITY_REPORT_MS || 10000)).unref();
 function touchActivity() {
   lastActivity = Date.now();
   if (cloud.configured && state.phase === "jam" && hostCount() > 0 && !cloud.want && cloud.status === "stopped")
@@ -430,7 +435,7 @@ wss.on("connection", (ws, req) => {
           console.log(`+ ${c.role} #${id} (${ip}) (${who()})`);
         }
         if (c.role === "groove" && msg.opus != null) c.opus = Boolean(msg.opus);
-        if (!prev && isPhone(c)) prewarmOnIntent("a phone joined");
+        if (!prev && isPhone(c)) { touchActivity(); prewarmOnIntent("a phone joined"); }
         if (sid) sessions.set(sid, c);
         send(ws, { type: "welcome", id, role: c.role, color: c.color, state, roster: roster(), crowdCount: crowdCount() });
         broadcastRoster(id);
@@ -466,7 +471,9 @@ wss.on("connection", (ws, req) => {
           break;
         }
         if (msg.action === "intent") { prewarmOnIntent("host interacted"); break; }
-        if (msg.action !== "chord") touchActivity();     // chord = the clock advancing, not a person
+        // chord/leadNotes = the clock and the lead looper advancing on their own, not a person (a
+        // looping lead used to count as "activity" forever and kept an abandoned room's GPU busy)
+        if (msg.action !== "chord" && msg.action !== "leadNotes") touchActivity();
         if (msg.action === "groove") state.groove = msg.payload;
         if (msg.action === "tempo") {
           if (msg.payload === "" || msg.payload == null) { state.tempo = null; hostSetTempo = false; recomputeTaste(); }  // cleared → auto/blank (genre re-fills)

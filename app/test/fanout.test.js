@@ -122,3 +122,34 @@ test("dead sockets (no pongs) are terminated and the player can resume", { timeo
     assert.equal(roster.length, 2, "the dead player left the roster");
   } finally { await srv.kill(); }
 });
+
+test("gateway: when every room is taken, an abandoned one (no human input) makes way for a new visitor", { timeout: 30000 }, async () => {
+  const port = await freePort();
+  const gw = spawn(process.execPath, [join(APP, "gateway.js")], {
+    cwd: APP, stdio: ["ignore", "pipe", "inherit"],
+    env: { ...process.env, PORT: String(port), MAX_ROOMS: "1", ABANDON_MIN: String(1.5 / 60), ACTIVITY_REPORT_MS: "300",
+           ANTHROPIC_API_KEY: "", TEXTURE_URL: "", TEXTURE_TOKEN: "" },
+  });
+  let log = ""; gw.stdout.on("data", (d) => { log += d; });
+  const visit = () => fetch(`http://127.0.0.1:${port}/`, { redirect: "manual", headers: { "user-agent": "Mozilla/5.0", accept: "text/html" } });
+  try {
+    for (let i = 0; i < 100 && !log.includes("Jamarama demo on"); i++) await sleep(100);
+    const first = await visit();
+    const cookie = first.headers.get("set-cookie").split(";")[0];
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/`, { headers: { cookie } });   // the first visitor's open tab
+    await new Promise((r) => ws.on("open", r));
+    ws.send(JSON.stringify({ type: "hello", role: "host", sid: "h1" }));
+    const keepBusy = setInterval(() => ws.send(JSON.stringify({ type: "host", action: "groove", payload: { x: 0.5, y: 0.5 } })), 200);
+    await sleep(2500);
+    assert.equal((await visit()).status, 503, "an ACTIVE room is never evicted");
+    clearInterval(keepBusy);
+    // the clock keeps running on its own (chord/leadNotes) — that is not a person
+    const clock = setInterval(() => ws.send(JSON.stringify({ type: "host", action: "chord", payload: { degree: "I", pcs: [0, 4, 7] } })), 200);
+    await sleep(2500);
+    const second = await visit();
+    clearInterval(clock);
+    assert.equal(second.status, 302, "the abandoned room was reclaimed");
+    assert.match(log, /abandoned .* reclaiming/);
+    ws.close();
+  } finally { gw.kill("SIGTERM"); }
+});

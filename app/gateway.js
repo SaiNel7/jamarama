@@ -24,6 +24,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = +(process.env.PORT || 3000);
 const MAX_ROOMS = +(process.env.MAX_ROOMS || 4);
 const IDLE_MIN = +(process.env.IDLE_MIN || 10);
+// When every room is taken, a room whose people haven't touched anything for ABANDON_MIN (a
+// forgotten background tab still holding its socket) gives way to a new visitor.
+const ABANDON_MIN = +(process.env.ABANDON_MIN || 15);
 const FIRST_ROOM_PORT = 4100;
 const COOKIE = "jroom";
 
@@ -80,7 +83,15 @@ function reapIdle(force = false) {
     if (now - r.lastSeen > limit) { killRoom(code); continue; }
     if (force && (!victim || r.lastSeen < rooms.get(victim).lastSeen)) victim = code;
   }
-  if (force && victim && rooms.size >= MAX_ROOMS) killRoom(victim);
+  if (force && victim && rooms.size >= MAX_ROOMS) { killRoom(victim); return; }
+  if (force && rooms.size >= MAX_ROOMS) {             // all rooms occupied → evict the most abandoned
+    let stalest = null;
+    for (const [code, r] of rooms) {
+      const idle = r.idleMs ?? 0;                      // reported by the room (no human input for…)
+      if (idle > ABANDON_MIN * 60000 && (!stalest || idle > rooms.get(stalest).idleMs)) stalest = code;
+    }
+    if (stalest) { console.log(`[gateway] room ${stalest} abandoned (${Math.round(rooms.get(stalest).idleMs / 60000)} min idle) — reclaiming`); killRoom(stalest); }
+  }
 }
 function killRoom(code) {
   const r = rooms.get(code);
@@ -97,11 +108,12 @@ async function createRoom(req) {
   const code = newCode(), port = freePort();
   const child = spawn(process.execPath, [join(__dirname, "server.js")], {
     cwd: __dirname,
-    stdio: ["ignore", "ignore", "inherit"],
+    stdio: ["ignore", "ignore", "inherit", "ipc"],      // ipc: the room reports human activity
     env: { ...process.env, PORT: String(port), PUBLIC_URL: `${publicBase(req)}/r/${code}`,
            NO_TEXTURE: "1", NO_PREBAKE: "1", NO_TUNNEL: "1", DEMO_MODE: "1", ANTHROPIC_API_KEY: "" },
   });
-  const room = { port, child, conns: 0, lastSeen: Date.now() };
+  const room = { port, child, conns: 0, lastSeen: Date.now(), idleMs: 0 };
+  child.on("message", (m) => { if (m?.type === "activity") room.idleMs = m.idleMs; });
   rooms.set(code, room);
   child.on("exit", () => { if (rooms.get(code) === room) rooms.delete(code); });
   try { await waitForPort(port); } catch { killRoom(code); return null; }
