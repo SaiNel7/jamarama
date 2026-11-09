@@ -230,11 +230,11 @@ function relayPcm(buf) {
 // to the host browser; the local Python/MLX engine is never spawned. Unconfigured or failing →
 // band only, silently. The token never leaves this process.
 const cloud = new CloudTexture({
-  url: process.env.TEXTURE_URL, token: process.env.TEXTURE_TOKEN,
+  url: process.env.TEXTURE_URL?.trim(), token: process.env.TEXTURE_TOKEN?.trim(),   // dashboard pastes often carry a newline
   maxRetries: +(process.env.TEXTURE_RETRIES ?? 3),
   onPcm: relayPcm,
   onStatus: (s) => { textureStatus = { ...s, source: "cloud" }; broadcast({ type: "texture", ...textureStatus }); },
-  log: (m) => console.log("  " + m),
+  log: (m) => console.error("  " + m),   // stderr: the demo gateway forwards only stderr to the platform logs
 });
 let textureStatus = cloud.configured ? { status: "standby", source: "cloud" }
   : { status: process.env.NO_TEXTURE ? "off" : "local", source: process.env.NO_TEXTURE ? null : "local" };
