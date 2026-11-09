@@ -9,8 +9,13 @@ import { loadVoices, prefetchVoices } from "/js/voices.js";
 import { NotationView } from "/js/notation.js";
 import { HostRecorder } from "/js/record.js";
 const Tone = window.Tone;
+// iOS: WebAudio obeys the ring/silent switch unless the page is a "playback" app (Safari 17+) —
+// a visitor opening the demo on an iPhone in silent mode would otherwise hear the lobby track
+// (an <audio> element) and then NOTHING once the WebAudio band starts.
+try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch {}
 
 const bus = new Bus("host");
+window.__jamBus = bus;                              // debug/test handle
 let st = null, roster = [];
 const ROLE_ORDER = ["groove", "harmony", "lead", "crowd"];
 const ROLE_LETTER = { groove: "G", harmony: "H", lead: "L", crowd: "C" };
@@ -226,6 +231,16 @@ function stopLobbyMusic() {
 ["pointerdown", "click", "keydown", "touchstart"].forEach((ev) =>
   document.addEventListener(ev, startLobbyMusic, true));
 
+// The OS can suspend/interrupt the AudioContext (iOS lock screen, phone call, Bluetooth switch,
+// some background-tab policies). Resume it whenever the page is visible again or touched.
+function resumeAudio() {
+  if (!started) return;
+  const c = Tone.getContext().rawContext;
+  if (c.state !== "running" && c.state !== "closed") c.resume().catch(() => {});
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") resumeAudio(); });
+["pointerdown", "touchend", "keydown"].forEach((ev) => document.addEventListener(ev, resumeAudio, true));
+
 let started = false;
 let lobbyReady = false;           // all players ready (or no players) — updated by paintRoster
 async function startAudio() {
@@ -402,7 +417,17 @@ function duckBed(time, amount, rel) {
   g.linearRampToValueAtTime(1.0, time + rel);         // release back up
 }
 
+// Stall guard: if the main thread was blocked (GC, a busy tab, a throttled background renderer)
+// while the AudioContext kept running, Tone's clock catches up by firing EVERY missed 16th at once
+// with times already in the past — they would all sound immediately as one burst. Steps that are
+// more than STALE_SEC late are advanced silently instead (grid, loops and readouts stay in phase).
+const STALE_SEC = 0.05;
+let stale = false;
+const clockStats = { steps: 0, stale: 0 };
+window.__jamClock = clockStats;                   // debug/test handle
 function onSixteenth(time) {
+  stale = time < Tone.immediate() - STALE_SEC;
+  clockStats.steps++; if (stale) clockStats.stale++;
   const sub = s16 % 16, beat = (sub / 4) | 0;
   // REAL swing: shift THIS step's time off the straight grid (swingOffsetSec), and play EVERY
   // instrument at the shifted time `at`. This genuinely changes the grid (jazz/blues/hip-hop feel)
@@ -417,7 +442,7 @@ function onSixteenth(time) {
   const kik = (t, v) => drumKit ? drumKit.hit("kick", t, v) : kick.triggerAttackRelease("C1", "8n", t, v);
   const snr = (t, v) => drumKit ? drumKit.hit("snare", t, v) : snare.triggerAttackRelease("16n", t, v);
   const hht = (t, v) => drumKit ? drumKit.hit("hat", t, v) : hat.triggerAttackRelease("32n", t, v);
-  const g = grooveStep(st?.feel || "backbeat", sub, bar, x, y);
+  const g = stale ? { kick: 0, snare: 0, hat: 0 } : grooveStep(st?.feel || "backbeat", sub, bar, x, y);
   if (g.kick  > 0.03) { kik(at, g.kick);  duckBed(at, 0.5, 0.18); recorder.logNote("drums", "kick", 0.2, g.kick, at); }
   if (g.snare > 0.03) { snr(at, g.snare); duckBed(at, 0.7, 0.12); recorder.logNote("drums", "snare", 0.12, g.snare, at); }
   if (g.hat   > 0.03) { hht(at, g.hat);   recorder.logNote("drums", "hat", 0.05, g.hat, at); }
@@ -482,7 +507,7 @@ function harmonyTick(time) {
     harmonyComp = harmonyBrain.comp(sched, harmonyParams(), harmonyIdx++);
   }
   const sixteenth = Tone.Time("16n").toSeconds();
-  if (chordSynth) for (const n of harmonyComp)
+  if (chordSynth && !stale) for (const n of harmonyComp)
     if (n.t === ph) { const dr = Math.max(0.08, n.d * sixteenth); chordSynth.triggerAttackRelease(midiName(n.p), dr, time, n.v ?? 0.8); recorder.logNote("harmony", n.p, dr, n.v ?? 0.8, time); }
   // chord-change → music-readout sync + state broadcast (checked on beats)
   if (s16 % 4 === 0) {
@@ -520,7 +545,7 @@ function bassTick(time) {
   const chord = (slot.notes && slot.notes.length) ? slot.notes : chordMidi(st?.key || "A", slot.roman || "I", 4, st?.scale);
   const nextChord = (nslot.notes && nslot.notes.length) ? nslot.notes : chordMidi(st?.key || "A", nslot.roman || "I", 4, st?.scale);
   const b = bassStep(st?.feel || "backbeat", ph % 16, Math.floor(ph / 16), groove.x || 0, groove.y || 0, chord, nextChord);
-  if (b && Number.isFinite(b.midi)) {
+  if (b && Number.isFinite(b.midi) && !stale) {
     const dr = Math.max(0.05, b.dur * Tone.Time("16n").toSeconds());
     bassSynth.triggerAttackRelease(midiName(b.midi), dr, time, b.vel);
     recorder.logNote("bass", b.midi, dr, b.vel, time);
@@ -690,7 +715,7 @@ function leadTick(time) {
   // Loop boundary: fresh variation → middle readout, and feed the GENERATED lead MIDI to the
   // texture (this replaces the held first-note seed once the generated loop is available).
   if (ph === 0) { leadGenerate(); if (leadNotified) pushLeadToTexture(true); Tone.getDraw().schedule(renderRoll, time); }
-  if (playLoop.length && leadSynth) {
+  if (playLoop.length && leadSynth && !stale) {
     const sixteenth = Tone.Time("16n").toSeconds();
     for (const n of playLoop)
       if (n.t === ph) { const dr = Math.max(0.05, n.d * sixteenth); leadSynth.triggerAttackRelease(midiName(n.p), dr, time, n.v ?? 0.9); recorder.logNote("lead", n.p, dr, n.v ?? 0.9, time); }
