@@ -5,7 +5,7 @@ import { LeadBrain, leadFeel } from "/js/brain/lead.js";
 import { HarmonyBrain } from "/js/brain/harmony.js";
 import { grooveStep, FEEL_SWING, bassStep } from "/js/brain/groove.js";
 import { midiName, snap, keyRoot, scaleSteps } from "/js/brain/theory.js";
-import { loadVoices } from "/js/voices.js";
+import { loadVoices, prefetchVoices } from "/js/voices.js";
 import { NotationView } from "/js/notation.js";
 import { HostRecorder } from "/js/record.js";
 const Tone = window.Tone;
@@ -77,7 +77,24 @@ async function refreshInfo() {
     const q2 = document.getElementById("qr2");           // audience join QR on the console
     if (q2) q2.src = info.qr;
     if (info.demo) showDemoNote();
+    if (info.voicesStatic) schedulePrefetch();
   } catch { setTimeout(refreshInfo, 1200); }
+}
+// The room plays the stock instrument samples (no per-jam bake) → fetch them while the visitor is
+// still in the lobby, so START → first note is a decode, not a ~10 MB download. Waits for the
+// lobby's own assets and for the tab to be visible (no cost for background-tab openers).
+let prefetchStarted = false;
+function schedulePrefetch() {
+  if (prefetchStarted) return;
+  const go = () => {
+    if (prefetchStarted || started) return;
+    if (document.visibilityState !== "visible") return document.addEventListener("visibilitychange", go, { once: true });
+    prefetchStarted = true;
+    const t0 = performance.now();
+    prefetchVoices().then((r) => { if (!r.skipped) console.log(`[voices] pre-fetched ${(r.bytes / 1e6).toFixed(1)} MB in ${((performance.now() - t0) / 1000).toFixed(1)} s`); });
+  };
+  const later = () => setTimeout(go, 1200);
+  if (document.readyState === "complete") later(); else window.addEventListener("load", later, { once: true });
 }
 refreshInfo();
 
@@ -176,6 +193,7 @@ async function applyPrebakedVoices() {
   if (v.lead)    leadSynth  = swap(leadSynth,  v.lead,    -9,  leadBus);       // lead voice
   if (v.bass)    bassSynth  = swap(bassSynth,  v.bass,    -13, bassBus);       // bass voice — sits below the loud drums
   if (v.drums)   drumKit    = v.drums.connect(drumBus);                       // sampled kit → drum stem
+  v.more?.then(() => console.log("[voices] all variations loaded"));
   const loaded = [v.harmony && "harmony", v.lead && "lead", v.bass && "bass", v.drums && "drums"].filter(Boolean);
   if (loaded.length) {
     const p = v.manifest?.voices || {};
