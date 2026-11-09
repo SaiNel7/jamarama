@@ -7,8 +7,10 @@
 //   GET /r/<code>/join   → what the QR encodes; pins a phone to that room, then /join
 //   GET /new             → force a fresh room
 //   everything else (assets, /info, WebSocket upgrade) → proxied to the cookie's room
-// Rooms run with NO_TEXTURE / NO_PREBAKE / NO_TUNNEL (no Magenta on a cloud box) and are
-// reaped once nobody has been connected for IDLE_MIN minutes.
+// Rooms run with NO_TEXTURE / NO_PREBAKE / NO_TUNNEL (no local Magenta on a cloud box) and are
+// reaped once nobody has been connected for IDLE_MIN minutes. If TEXTURE_URL + TEXTURE_TOKEN are
+// set (inherited through the env), each room streams its MRT2 texture from the mrt2-cloud GPU
+// service. One session per room, opened at jam start, closed when the room ends.
 import http from "http";
 import net from "net";
 import { spawn } from "child_process";

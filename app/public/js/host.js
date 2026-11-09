@@ -8,6 +8,7 @@ import { midiName, snap, keyRoot, scaleSteps } from "/js/brain/theory.js";
 import { loadVoices, prefetchVoices } from "/js/voices.js";
 import { NotationView } from "/js/notation.js";
 import { HostRecorder } from "/js/record.js";
+import { TextureBridge } from "/js/texture_bridge.js";
 const Tone = window.Tone;
 // iOS: WebAudio obeys the ring/silent switch unless the page is a "playback" app (Safari 17+) —
 // a visitor opening the demo on an iPhone in silent mode would otherwise hear the lobby track
@@ -50,21 +51,44 @@ bus.on("voices", () => {
 // state — never flash the LAN address. The final URL (tunnel, or LAN only if the
 // tunnel can't start) is the first thing ever displayed. Also feeds the console's
 // audience join QR (#qr2) once the link is final.
-// Hosted public demo (app/gateway.js): say what this is, and what it isn't.
+// Hosted public demo (app/gateway.js): say what this is, and what it isn't. The wording follows the
+// REAL texture state the room server reports (/info + `texture` WS messages): "band only" appears
+// only when the Magenta texture is actually off (not configured, or the cloud GPU failed).
+let demoMode = false, demoDismissed = false;
+let textureState = { status: "off", source: null };
+function demoHeadline() {
+  const { status, source } = textureState;
+  if (source === "cloud" && status === "live")
+    return `<b>Live demo.</b> The clock-locked band runs here in your browser; the Magenta RealTime 2
+      texture layer streams live from a cloud GPU.`;
+  if (source === "cloud" && (status === "standby" || status === "warming"))
+    return `<b>Live demo.</b> The clock-locked band runs here in your browser; the Magenta RealTime 2
+      texture layer streams from a cloud GPU and fades in once it's warm (up to about a minute on a cold start).`;
+  if (source === "cloud" && status === "stopped")
+    return `<b>Live demo.</b> The Magenta RealTime 2 texture layer paused while the room was idle;
+      play a part to bring it back.`;
+  if (source === "local" && status !== "off")
+    return `<b>Live demo.</b> The clock-locked band runs here; the Magenta RealTime 2 texture layer runs on this host.`;
+  return `<b>Live demo · band only.</b> The clock-locked band runs here; the Magenta RealTime 2
+    texture layer isn't available right now, so it's off.`;
+}
 function showDemoNote() {
-  if (document.getElementById("demo-note")) return;
-  const el = document.createElement("div");
-  el.id = "demo-note";
-  el.style.cssText = "position:fixed;left:12px;bottom:12px;z-index:9999;max-width:min(440px,calc(100vw - 24px));"
-    + "background:#fffbea;color:#111;border:3px solid #111;box-shadow:5px 5px 0 #111;padding:10px 34px 10px 12px;"
-    + "font:14px/1.4 system-ui,sans-serif";
-  el.innerHTML = `<b>Live demo · band only.</b> The clock-locked band runs here; the Magenta RealTime 2
-    texture layer needs an Apple Silicon Mac, so it's off.
+  if (!demoMode || demoDismissed) return;
+  let el = document.getElementById("demo-note");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "demo-note";
+    el.style.cssText = "position:fixed;left:12px;bottom:12px;z-index:9999;max-width:min(440px,calc(100vw - 24px));"
+      + "background:#fffbea;color:#111;border:3px solid #111;box-shadow:5px 5px 0 #111;padding:10px 34px 10px 12px;"
+      + "font:14px/1.4 system-ui,sans-serif";
+    document.body.appendChild(el);
+  }
+  el.dataset.texture = `${textureState.source || "none"}:${textureState.status}`;
+  el.innerHTML = `<span class="dn-head">${demoHeadline()}</span>
     <a href="https://dylancantor.com/jamarama.html" target="_blank" rel="noopener">Hear the full version →</a><br>
     No phone? Open <a href="/join" target="_blank" rel="noopener">/join</a> in another window to play a part.
     <button aria-label="Dismiss" style="position:absolute;top:4px;right:6px;border:0;background:none;font:20px system-ui;cursor:pointer">×</button>`;
-  el.querySelector("button").onclick = () => el.remove();
-  document.body.appendChild(el);
+  el.querySelector("button").onclick = () => { demoDismissed = true; el.remove(); };
 }
 
 async function refreshInfo() {
@@ -81,7 +105,8 @@ async function refreshInfo() {
     document.getElementById("joinurl").textContent = info.joinUrl;
     const q2 = document.getElementById("qr2");           // audience join QR on the console
     if (q2) q2.src = info.qr;
-    if (info.demo) showDemoNote();
+    if (info.texture && !textureState.fromWs) textureState = { status: info.texture, source: info.textureSource || null };
+    if (info.demo) { demoMode = true; showDemoNote(); }
     if (info.voicesStatic) schedulePrefetch();
   } catch { setTimeout(refreshInfo, 1200); }
 }
@@ -659,33 +684,27 @@ function pushLeadToTexture(active, pitches) {
   bus.send({ type: "host", action: "leadNotes", payload: { active, pitches: active ? (pitches || leadPitchSet()) : [] } });
 }
 
-// --- streamed MRT2 texture playback (PCM from the Python engine, forwarded by the server) ---
-// The engine streams ~0.48s Int16 stereo chunks; schedule them back-to-back on the audio clock with
-// a small lead buffer so network jitter doesn't gap the bed. If a chunk is late (underrun) the
-// cursor re-primes. Routed through textureBus → bedDuck → master, so it ducks and is recorded.
-let texNextTime = 0, texChunks = 0;
-const TEX_LEAD = 0.18;                                  // seconds of jitter buffer ahead of the clock
-function playTexturePcm(buf) {
-  if (!textureBus) return;                              // audio engine not started yet → drop
-  const i16 = new Int16Array(buf);
-  const frames = i16.length >> 1;                       // interleaved stereo
-  if (!frames) return;
-  const ctx = Tone.getContext().rawContext;
-  const ab = ctx.createBuffer(2, frames, 48000);        // browser resamples to the context rate on play
-  const L = ab.getChannelData(0), R = ab.getChannelData(1);
-  for (let i = 0; i < frames; i++) { L[i] = i16[2 * i] / 32768; R[i] = i16[2 * i + 1] / 32768; }
-  const src = ctx.createBufferSource();
-  src.buffer = ab;
-  try { Tone.connect(src, textureBus); } catch { src.connect(textureBus.input || textureBus); }
-  const now = ctx.currentTime;
-  if (texNextTime < now + 0.02) texNextTime = now + TEX_LEAD;   // (re)prime the buffer at start / after a gap
-  src.start(texNextTime);
-  texNextTime += ab.duration;
-  src.onended = () => { try { src.disconnect(); } catch {} };
-  if (texChunks++ === 0) console.log("[texture] receiving PCM from the engine — bed is live");
-  else if (texChunks % 40 === 0) console.log(`[texture] ${texChunks} chunks played`);
-}
-bus.onBinary(playTexturePcm);
+// --- streamed MRT2 texture playback (PCM from the local engine OR the cloud GPU, relayed by the server) ---
+// texture_bridge.js schedules the Int16 stereo chunks back-to-back on the audio clock behind a jitter
+// buffer and fades the bed in when it (re)starts — so a cloud cold start never pops in over the band.
+// Routed into textureBus → master, so it hits the limiter and is captured in the export.
+const textureBridge = new TextureBridge({
+  ctx: () => (textureBus ? Tone.getContext().rawContext : null),     // audio engine not started yet → drop
+  connect: (node) => {
+    if (!textureBus) return false;
+    try { Tone.connect(node, textureBus); } catch { node.connect(textureBus.input || textureBus); }
+    return true;
+  },
+});
+window.__jamTexture = textureBridge;                    // debug/test handle (stats only)
+bus.onBinary((buf) => textureBridge.push(buf));
+// Texture status from the room server: cloud warming → live (→ failed/stopped), or local/off.
+bus.on("texture", (m) => {
+  textureState = { status: m.status, source: m.source || null, fromWs: true };
+  if (m.prebufferMs) textureBridge.setPrebuffer(m.prebufferMs + 120);   // + Render↔browser jitter
+  if (m.status === "live") console.log(`[texture] cloud GPU live (${m.gpu || "gpu"}, rtf ${m.rtf})`);
+  showDemoNote();
+});
 
 // Record a played note at the (host-quantized) playhead. Auto-arms on the first note.
 // latMs = the player's one-way network latency (server-measured RTT/2): the finger was

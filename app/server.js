@@ -12,6 +12,7 @@ import { existsSync, readFileSync, cpSync } from "fs";
 import QRCode from "qrcode";
 import { arrangeJam } from "./taste.js";
 import { arrangeFromGenres } from "./genres.js";   // deterministic (sync) genre arrange — for tempo/key at jam start
+import { CloudTexture } from "./texture_cloud.js";  // MRT2 texture streamed from a cloud GPU (mrt2-cloud)
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -204,12 +205,51 @@ function flushState() {
   const msg = { type: "state", state, crowdCount: crowdCount() };
   if (rj !== lastRosterJson) { msg.roster = r; lastRosterJson = rj; }
   broadcast(msg);
+  if (state.phase === "jam") cloud.update(state);   // cloud texture follows the room (diffed + coalesced)
 }
 function broadcastRoster(exceptId = null) {
   const r = roster();
   lastRosterJson = JSON.stringify(r);
   broadcast({ type: "roster", roster: r, crowdCount: crowdCount() }, exceptId);
 }
+
+// --- MRT2 texture PCM → host browser(s) ---
+// Both texture sources (the local MLX engine over WS, or the cloud session) land here and go to
+// every host tab, where the WebAudio bridge plays them into the bus graph. Backpressure: if a
+// host socket is backed up (slow link), drop frames rather than queue unbounded memory.
+const PCM_BACKLOG = 256 * 1024;   // ~1.3 s of 48 kHz stereo int16
+function relayPcm(buf) {
+  for (const h of clients.values())
+    if (h.role === "groove" && h.ws.readyState === h.ws.OPEN && h.ws.bufferedAmount < PCM_BACKLOG) {
+      try { h.ws.send(buf, { binary: true }); } catch {}
+    }
+}
+
+// --- cloud texture (TEXTURE_URL + TEXTURE_TOKEN) ---
+// When configured, this room opens ONE mrt2-cloud session when the jam starts and relays its PCM
+// to the host browser; the local Python/MLX engine is never spawned. Unconfigured or failing →
+// band only, silently. The token never leaves this process.
+const cloud = new CloudTexture({
+  url: process.env.TEXTURE_URL, token: process.env.TEXTURE_TOKEN,
+  maxRetries: +(process.env.TEXTURE_RETRIES ?? 3),
+  onPcm: relayPcm,
+  onStatus: (s) => { textureStatus = { ...s, source: "cloud" }; broadcast({ type: "texture", ...textureStatus }); },
+  log: (m) => console.log("  " + m),
+});
+let textureStatus = cloud.configured ? { status: "standby", source: "cloud" }
+  : { status: process.env.NO_TEXTURE ? "off" : "local", source: process.env.NO_TEXTURE ? null : "local" };
+// Room-level idle: a forgotten host tab must not hold a GPU. No player/host interaction for
+// TEXTURE_IDLE_MIN → close the session; the next interaction reopens it (texture fades back in).
+const TEXTURE_IDLE_MS = 60000 * +(process.env.TEXTURE_IDLE_MIN || 8);
+let lastActivity = Date.now();
+function touchActivity() {
+  lastActivity = Date.now();
+  if (cloud.configured && state.phase === "jam" && hostCount() > 0 && !cloud.want && cloud.status === "stopped")
+    cloud.start(state);
+}
+if (cloud.configured) setInterval(() => {
+  if (cloud.want && Date.now() - lastActivity > TEXTURE_IDLE_MS) cloud.stop("room idle");
+}, 15000).unref();
 
 // --- HTTP ---
 const app = express();
@@ -237,6 +277,7 @@ app.get("/info", async (_req, res) => {
   const ju = joinUrl();   // re-read every request: flips to the tunnel URL once it's up
   res.json({ ip: IP, port: PORT, joinUrl: ju, pending: tunnelPending, demo: Boolean(process.env.DEMO_MODE),
              voicesStatic: Boolean(process.env.NO_PREBAKE),    // stock samples all jam → the lobby may pre-fetch them
+             texture: textureStatus.status, textureSource: textureStatus.source,
              qr: await QRCode.toDataURL(ju, { margin: 1, width: 320 }) });
 });
 
@@ -337,8 +378,7 @@ wss.on("connection", (ws, req) => {
     // browser, where it joins the WebAudio bus graph (duck + limiter + recorded export).
     if (isBinary) {
       if (clients.get(id)?.role !== "texture") return;
-      for (const h of clients.values())
-        if (h.role === "groove" && h.ws.readyState === h.ws.OPEN) { try { h.ws.send(raw, { binary: true }); } catch {} }
+      relayPcm(raw);
       return;
     }
     let msg;
@@ -376,6 +416,7 @@ wss.on("connection", (ws, req) => {
         send(ws, { type: "welcome", id, role: c.role, color: c.color, state, roster: roster(), crowdCount: crowdCount() });
         broadcastRoster(id);
         if (c.role === "groove") {
+          send(ws, { type: "texture", ...textureStatus });
           onHostConnect();                          // host tab opened → bring the texture engine up
           // a host joining/reloading mid-jam after the bake landed → hand it this round's voices
           if (voicesManifest && state.phase === "jam") send(ws, { type: "voices", manifest: voicesManifest });
@@ -392,6 +433,7 @@ wss.on("connection", (ws, req) => {
       // `lat` = the sender's one-way network latency estimate (RTT/2, see the pinger
       // below) so the host can subtract transport delay when quantizing played notes.
       case "control": {
+        touchActivity();
         applyControl(msg, id);
         broadcastTo(isHost, { type: "control", from: id, role: clients.get(id)?.role, action: msg.action,
                     payload: msg.payload, lat: Math.round((clients.get(id)?.rtt || 0) / 2) });
@@ -400,6 +442,7 @@ wss.on("connection", (ws, req) => {
       }
       // Host pad / tempo / clock-driven chord advance + lobby room/key/tempo edits.
       case "host": {
+        if (msg.action !== "chord") touchActivity();     // chord = the clock advancing, not a person
         if (msg.action === "groove") state.groove = msg.payload;
         if (msg.action === "tempo") {
           if (msg.payload === "" || msg.payload == null) { state.tempo = null; hostSetTempo = false; recomputeTaste(); }  // cleared → auto/blank (genre re-fills)
@@ -451,6 +494,7 @@ wss.on("connection", (ws, req) => {
           // built-in synths all jam (A/B the baked voices, or save GPU on weak hosts).
           if (!process.env.NO_PREBAKE) prebakeFromTastes();
           else { console.log("  [prebake] disabled (NO_PREBAKE=1) — default instrument samples"); useDefaultVoices(); }
+          if (cloud.configured && hostCount() > 0) cloud.start(state);   // GPU session; fades in when ready
         }
         broadcastState();
         break;
@@ -674,8 +718,16 @@ let textureRetries = 0;        // consecutive crash respawns (reset after a heal
 let textureSpawnAt = 0;        // when the current child started (to detect a healthy run)
 
 // Host tab connected → start the engine; cancel any pending shutdown from a quick reload.
+// Cloud mode: during the lobby just PRE-WARM (boot a GPU container so the jam's texture is ready
+// sooner); the session itself opens at jam start. A host reloading mid-jam resumes the session.
 function onHostConnect() {
   if (textureGrace) { clearTimeout(textureGrace); textureGrace = null; }
+  if (cloud.configured) {
+    touchActivity();
+    if (state.phase === "jam") cloud.start(state);
+    else if (process.env.TEXTURE_PREWARM !== "0") cloud.prewarm();
+    return;
+  }
   startTexture();
 }
 // Last host tab closed → stop the engine, but wait out a grace window first so a page
@@ -727,10 +779,15 @@ function startTexture() {
 }
 // Stop the engine when no host is connected. The child's exit handler clears `texture`.
 function stopTexture() {
+  if (cloud.configured) cloud.stop("no host connected");
   if (!texture) return;
   textureStopping = true;                          // mark intentional so the exit handler won't respawn
   console.log("  [texture] no host connected — stopping engine\n");
   texture.kill("SIGTERM");
 }
-for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { texture?.kill("SIGTERM"); tunnel?.kill("SIGTERM"); process.exit(0); });
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => {
+  texture?.kill("SIGTERM"); tunnel?.kill("SIGTERM");
+  cloud.stop("room closed");                           // releases the GPU session right away
+  setTimeout(() => process.exit(0), 150);               // let the close frame flush
+});
 process.on("exit", () => { texture?.kill("SIGTERM"); tunnel?.kill("SIGTERM"); });
