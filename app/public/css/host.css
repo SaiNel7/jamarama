@@ -67,7 +67,7 @@ input.num::-webkit-outer-spin-button, input.num::-webkit-inner-spin-button { -we
 #lobby .mono.caption { font-size:calc(13 * var(--u)); color:#5a564d; }
 /* character lineup pinned to the bottom of the landing page (transparent bg, decorative) */
 #lobby::after { content:""; position:absolute; left:0; right:0; bottom:calc(-48 * var(--u)); height:calc(460 * var(--u));
-  background:url("/assets/bgd_overlay.png") bottom center / contain no-repeat; pointer-events:none; }
+  background:url("/assets/bgd_overlay.webp") bottom center / contain no-repeat; pointer-events:none; }
 .lobby-wrap { display:grid; grid-template-columns:1fr calc(380 * var(--u)); gap:calc(48 * var(--u));
   max-width:calc(1100 * var(--u)); width:100%; align-items:center; position:relative; z-index:2; }
 

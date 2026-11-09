@@ -843,7 +843,7 @@ function chip(r) {
   const name = esc(r.name || "#" + r.id);
   const sub = r.taste ? `<span class="sub">“${esc(r.taste)}”</span>` : "";
   // r.avatar is a server-validated slug from the pfp pool (assets/pfps/<slug>.png)
-  const av = r.avatar ? `<img class="chip-av" src="/assets/pfps/${r.avatar}.png" alt="">` : "";
+  const av = r.avatar ? `<img class="chip-av" src="/assets/pfps/${r.avatar}.webp" alt="">` : "";
   return `<span class="lb-chip${r.ready ? " rdy" : ""}" style="background:${ROLE_COLOR[r.role]}">` +
     `<span class="mono caps top">${av}${name} <i>${r.role}</i> ${r.ready ? "✓" : "…"}</span>${sub}</span>`;
 }

@@ -16,6 +16,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { existsSync, cpSync } from "fs";
 import { randomBytes } from "crypto";
+import { createStatic } from "./static.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = +(process.env.PORT || 3000);
@@ -30,6 +31,14 @@ const COOKIE = "jroom";
   if (!existsSync(join(voices, "manifest.json")) && existsSync(join(defaults, "manifest.json")))
     cpSync(defaults, voices, { recursive: true });
 }
+
+// Assets are the same in every room → served here once (compressed + cached) instead of being
+// proxied into a room process per request. Only pages, /info and WebSockets reach the rooms.
+const ASSET = /^\/(js|css|assets|vendor|voices)\/|^\/lobby\.mp3$|^\/favicon\.ico$/;
+const serveAsset = createStatic([
+  ["/vendor/tone/", join(__dirname, "node_modules/tone/build")],
+  ["/", join(__dirname, "public")],
+]);
 
 const rooms = new Map(); // code -> { port, child, conns, lastSeen, ready }
 
@@ -119,6 +128,7 @@ function proxy(req, res, code) {
 const server = http.createServer(async (req, res) => {
   const path = req.url.split("?")[0];
   if (path === "/healthz") return res.writeHead(200).end("ok");
+  if (ASSET.test(path) && await serveAsset(req, res)) return;
 
   const pin = /^\/r\/([A-F0-9]{6})(\/join)?\/?$/.exec(path);   // QR target: /r/<code>/join
   if (pin) {
