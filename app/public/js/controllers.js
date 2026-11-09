@@ -9,7 +9,7 @@ try { window.screen.orientation?.lock?.("portrait").catch(() => {}); } catch {}
 let me = null, st = null, roster = [];
 
 bus.on("welcome", (m) => {
-  me = m; st = m.state; roster = m.roster || [];
+  me = m; st = m.state; st.crowdCount = m.crowdCount ?? 0; roster = m.roster || [];
   document.documentElement.style.setProperty("--role", m.color);
   // Pre-jam: onboard in the lobby. Late joiners (phase already "jam") skip
   // straight to their role UI — personalization is an upgrade, never a gate.
@@ -17,11 +17,11 @@ bus.on("welcome", (m) => {
 });
 bus.on("state", (m) => {
   const wasLobby = st?.phase === "lobby";
-  st = m.state; roster = m.roster || roster;
+  st = { ...m.state, crowdCount: m.crowdCount ?? st?.crowdCount ?? 0 }; roster = m.roster || roster;
   if (wasLobby && st.phase === "jam" && me) { closeAvPick(); render(); return; }  // host started → flip to role UI
   if (st.phase === "lobby") refreshLobby(); else refresh();
 });
-bus.on("roster", (m) => { roster = m.roster || roster; if (st?.phase === "lobby") refreshLobby(); });
+bus.on("roster", (m) => { roster = m.roster || roster; if (st && m.crowdCount != null) st.crowdCount = m.crowdCount; if (st?.phase === "lobby") refreshLobby(); });
 bus.on("beat", (m) => onBeat(m));
 
 // ===================================================== chord theory (local — keeps shared.js untouched)

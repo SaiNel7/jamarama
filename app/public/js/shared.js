@@ -13,25 +13,71 @@ export class Bus {
       if (!sid) { sid = crypto.randomUUID(); sessionStorage.setItem("jam-sid", sid); }
       this.sid = sid;
     } catch { this.sid = Math.random().toString(36).slice(2) + Date.now().toString(36); }
+    this.lastRx = Date.now();
+    this.fails = 0;            // consecutive failed connects → reconnect backoff
+    this.helloExtra = {};      // extra fields for hello (e.g. the host's texture codec support)
     this.connect();
+    // Watchdog: phones that sleep or hop WiFi→cellular often keep a half-open socket that never
+    // fires onclose. Probe with an app-level ping when the link has been quiet, and replace a
+    // socket that hasn't delivered anything for STALE_MS. Waking up / coming back online / the
+    // tab becoming visible again probes right away instead of waiting for the next tick.
+    setInterval(() => this._check(), 2000);
+    const wake = () => this._check(true);
+    document.addEventListener?.("visibilitychange", () => { if (document.visibilityState === "visible") wake(); });
+    window.addEventListener?.("online", wake);
+    window.addEventListener?.("pageshow", wake);
   }
   connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws"; // match page protocol (tunnel-safe)
     const url = `${proto}://${location.host}`;
-    this.ws = new WebSocket(url);
-    this.ws.binaryType = "arraybuffer";
-    this.ws.onopen = () => this.send({ type: "hello", role: this.role, sid: this.sid });
-    this.ws.onmessage = (e) => {
+    const ws = new WebSocket(url);
+    this.ws = ws;
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => {
+      this.fails = 0; this.lastRx = Date.now();
+      this.send({ type: "hello", role: this.role, sid: this.sid, ...this.helloExtra });
+    };
+    ws.onmessage = (e) => {
+      if (ws !== this.ws) return;
+      this.lastRx = Date.now(); this._probeAt = 0;
       if (e.data instanceof ArrayBuffer) { this.binHandlers.forEach((fn) => fn(e.data)); return; }  // streamed PCM
       const msg = JSON.parse(e.data);
       if (msg.type === "welcome") this.id = msg.id;
       (this.handlers[msg.type] || []).forEach((fn) => fn(msg));
     };
-    this.ws.onclose = () => setTimeout(() => this.connect(), 800); // auto-reconnect on LAN
+    ws.onclose = () => {
+      if (ws !== this.ws) return;                       // a socket we already replaced
+      // auto-reconnect: fast at first (LAN blips), backing off with jitter so a dead room / restarted
+      // gateway isn't hammered every 800 ms forever by forgotten tabs.
+      const delay = Math.min(8000, 800 * 1.6 ** Math.min(this.fails++, 6)) * (0.8 + 0.4 * Math.random());
+      clearTimeout(this._retry);
+      this._retry = setTimeout(() => this.connect(), delay);
+    };
+  }
+  _check(force = false) {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== 1) {                         // closed/closing: reconnect now if forced
+      if (force && ws?.readyState === 3) { clearTimeout(this._retry); this.fails = 0; this.connect(); }
+      return;
+    }
+    const now = Date.now(), quiet = now - this.lastRx;
+    if (this._probeAt && now - this._probeAt > 3000) { this._replace(); return; }   // probe unanswered
+    if ((force || quiet > 4000) && !this._probeAt) {
+      this._probeAt = now;
+      try { ws.send(JSON.stringify({ type: "ping", t: now })); } catch { this._replace(); }
+    }
+  }
+  _replace() {                                                 // drop a dead socket, reconnect now
+    this._probeAt = 0;
+    const old = this.ws;
+    this.ws = null;
+    try { old.onclose = null; old.close(); } catch {}
+    clearTimeout(this._retry);
+    this.connect();
   }
   on(type, fn) { (this.handlers[type] ||= []).push(fn); return this; }
   onBinary(fn) { this.binHandlers.push(fn); return this; }
-  send(obj) { if (this.ws.readyState === 1) this.ws.send(JSON.stringify(obj)); }
+  send(obj) { if (this.ws?.readyState === 1) this.ws.send(JSON.stringify(obj)); }
   control(action, payload) { this.send({ type: "control", action, payload }); }
 }
 
