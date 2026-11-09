@@ -163,14 +163,9 @@ export class CloudTexture {
       let m; try { m = JSON.parse(data); } catch { return; }
       if (m.type === "ready") {
         ready = true; clearTimeout(readyTimer);
-        if (typeof m.rtf === "number" && m.rtf > 0 && m.rtf < this.minRtf) {
-          // The GPU can't keep up → a choppy bed is worse than none. Give up for this room.
-          this.log(`[texture-cloud] GPU too slow (rtf ${m.rtf}) — band only`);
-          this.retries = this.maxRetries;
-          this._setStatus("failed", { reason: "slow" });
-          try { ws.close(1000); } catch {}
-          return;
-        }
+        // NB: ready.rtf is the one-off prefill step (~0.57 on an A10 that then streams at ~3.8x),
+        // so it is NOT a speed verdict — the steady-state `stats` messages below are.
+        this._slowStats = 0;
         this.retries = 0;
         this.log(`[texture-cloud] live: ${m.gpu || m.device} ${m.backend} rtf=${m.rtf} prebuffer=${m.prebuffer_ms}ms`);
         this._setStatus("live", { prebufferMs: m.prebuffer_ms, rtf: m.rtf, gpu: m.gpu });
@@ -178,9 +173,19 @@ export class CloudTexture {
       } else if (m.type === "error") {
         this.log(`[texture-cloud] ${m.fatal ? "error" : "warning"}: ${m.code} ${m.message}`);
         if (m.code === "capacity") this._capacity = m.retry_after_ms || 15000;
-      } else if (m.type === "stats" && m.underruns && m.underruns !== this._lastUnderruns) {
-        this._lastUnderruns = m.underruns;
-        this.log(`[texture-cloud] GPU underruns=${m.underruns} rtf=${m.rtf}`);
+      } else if (m.type === "stats") {
+        if (m.underruns && m.underruns !== this._lastUnderruns) {
+          this._lastUnderruns = m.underruns;
+          this.log(`[texture-cloud] GPU underruns=${m.underruns} rtf=${m.rtf}`);
+        }
+        // Steady-state too slow for 3 reports in a row → a choppy bed is worse than none.
+        this._slowStats = (typeof m.rtf === "number" && m.rtf > 0 && m.rtf < this.minRtf) ? (this._slowStats || 0) + 1 : 0;
+        if (this._slowStats >= 3) {
+          this.log(`[texture-cloud] GPU too slow (rtf ${m.rtf}) — band only`);
+          this.retries = this.maxRetries;
+          this._setStatus("failed", { reason: "slow" });
+          try { ws.close(1000); } catch {}
+        }
       }
     });
     ws.on("error", (e) => this.log(`[texture-cloud] socket error: ${e.code || e.message}`));
