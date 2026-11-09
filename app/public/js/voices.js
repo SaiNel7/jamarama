@@ -14,19 +14,57 @@ const Tone = window.Tone;
 
 const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
-// Re-bakes overwrite the same filenames (harmony_C4.wav, …), so bust the browser
-// cache per load — a mid-session re-bake must not serve last bake's samples.
-const bust = () => `?v=${Date.now()}`;
+// Re-bakes overwrite the same filenames (harmony_C4.wav, …), so sample URLs carry the manifest's
+// revision (its Last-Modified time): a re-bake gets fresh URLs, while the SAME samples keep the
+// same URLs across page loads and rooms — so they can be cached (the server marks ?v= URLs
+// immutable) and pre-fetched in the lobby. (Previously every load busted the cache with Date.now(),
+// re-downloading ~22 MB on every START.)
+async function fetchManifest(base) {
+  const r = await fetch(base + "manifest.json", { cache: "no-store" });
+  if (!r.ok) return null;
+  const manifest = await r.json();
+  const rev = r.headers.get("last-modified") || r.headers.get("etag") || String(Date.now());
+  return { manifest, q: `?v=${encodeURIComponent(rev)}` };
+}
+
+// The committed default kit ships losslessly FLAC-encoded twins ("flac": true in its manifest):
+// 43% of the WAV bytes, bit-identical audio. Any browser that can't decode FLAC falls back to WAV.
+const canFlac = (() => {
+  try { return !!document.createElement("audio").canPlayType("audio/flac"); } catch { return false; }
+})();
+const flacName = (f) => f.replace(/\.wav$/i, ".flac");
+function sampleUrls(manifest, base, q, file) {
+  const wav = base + file + q;
+  return manifest?.flac && canFlac && /\.wav$/i.test(file) ? [base + flacName(file) + q, wav] : [wav];
+}
+async function loadBuffer(urls) {
+  for (const url of urls) {
+    try { return await Tone.ToneAudioBuffer.fromUrl(url); } catch { /* try the next format */ }
+  }
+  return null;
+}
 
 // Drop-in replacement for a poly/mono synth that fans out across several variation samplers.
 class MultiSampler {
   constructor(samplers) {
     this.samplers = samplers.filter(Boolean);
     this._t = null; this._i = 0;   // remember the variation used for the current trigger-time
-    // host.js sets `.volume.value = x`; fan it out to every variation.
-    this.volume = { set value(v) { for (const s of this._s) s.volume.value = v; }, _s: this.samplers };
+    this._dests = []; this._vol = null; this._disposed = false;
+    // host.js sets `.volume.value = x`; fan it out to every variation (and remember it for late ones).
+    const self = this;
+    this.volume = { set value(v) { self._vol = v; for (const s of self.samplers) s.volume.value = v; },
+                    get value() { return self._vol; } };
   }
-  connect(node) { for (const s of this.samplers) s.connect(node); return this; }
+  connect(node) { this._dests.push(node); for (const s of this.samplers) s.connect(node); return this; }
+  // Variations beyond the first stream in AFTER the band has started; each joins the random pool
+  // with the same level/routing as the rest (or is dropped if this voice was already swapped out).
+  add(s) {
+    if (!s) return;
+    if (this._disposed) { try { s.dispose(); } catch {} return; }
+    if (this._vol != null) s.volume.value = this._vol;
+    for (const d of this._dests) s.connect(d);
+    this.samplers.push(s);
+  }
   triggerAttackRelease(note, dur, time, vel) {
     // All notes of one CHORD arrive with the SAME `time` → use ONE variation for the whole chord,
     // so a chord is never an incoherent mix of variations. A new time picks a fresh variation (flair).
@@ -34,7 +72,7 @@ class MultiSampler {
     const s = this.samplers[this._i];
     if (s) s.triggerAttackRelease(note, dur, time, vel);
   }
-  dispose() { for (const s of this.samplers) { try { s.dispose(); } catch {} } }
+  dispose() { this._disposed = true; for (const s of this.samplers) { try { s.dispose(); } catch {} } }
 }
 
 // A sampled drum kit. Buffers are pre-loaded; each hit spins up a short-lived buffer source
@@ -61,57 +99,88 @@ class DrumKit {
   }
 }
 
-// Build the variation samplers for one pitched voice. Resolves to a MultiSampler or null.
-async function loadVoice(v, base) {
+// One variation's note→file map → a Tone.Sampler over pre-decoded buffers (null if nothing loaded).
+// attack:0 → the sampler plays each buffer from sample[0] with no fade-in, so the baked transient
+// lands exactly on the beat. A short release avoids note-off clicks. A bad sample is skipped.
+async function loadVariation(map, manifest, base, q) {
+  const entries = await Promise.all(Object.entries(map).map(async ([note, f]) =>
+    [note, await loadBuffer(sampleUrls(manifest, base, q, f))]));
+  const urls = Object.fromEntries(entries.filter(([, b]) => b));
+  if (!Object.keys(urls).length) return null;
+  return new Tone.Sampler({ urls, attack: 0, release: 0.12 });
+}
+
+// Build the variation samplers for one pitched voice → a MultiSampler, or null.
+// Time-to-first-sound: only the FIRST variation is awaited; the others (2 more per voice in the
+// default kit, ~half the bytes) load in the background and join the random pool as they land.
+async function loadVoice(v, manifest, base, q, background) {
   const variations = v?.variations || (v?.urls ? [v.urls] : []);   // tolerate the old single-map schema
-  let maps = variations.filter((u) => u && Object.keys(u).length);
+  const maps = variations.filter((u) => u && Object.keys(u).length);
   if (!maps.length) return null;
-  const b = bust();
-  maps = maps.map((u) => Object.fromEntries(Object.entries(u).map(([note, f]) => [note, f + b])));
-  const samplers = await Promise.all(maps.map((urls) => new Promise((resolve) => {
-    // attack:0 → the sampler plays each buffer from sample[0] with no fade-in, so the baked
-    // transient lands exactly on the beat (Tone.Sampler always plays from the buffer start; the
-    // explicit 0 attack guarantees nothing delays the onset). A short release avoids note-off clicks.
-    // onload resolves once decoded; onerror still resolves so one bad sample can't hang the load.
-    const s = new Tone.Sampler({ urls, baseUrl: base, attack: 0, release: 0.12,
-      onload: () => resolve(s), onerror: () => resolve(s) });
-  })));
-  const ok = samplers.filter(Boolean);
-  return ok.length ? new MultiSampler(ok) : null;
+  let first = null, i = 0;
+  while (!first && i < maps.length) first = await loadVariation(maps[i++], manifest, base, q);
+  if (!first) return null;
+  const ms = new MultiSampler([first]);
+  const rest = maps.slice(i);
+  if (rest.length) background.push(async () => { for (const m of rest) ms.add(await loadVariation(m, manifest, base, q)); });
+  return ms;
 }
 
 // Pre-load all drum one-shots into buffers → a DrumKit, or null if none.
-async function loadDrums(drums, base) {
+async function loadDrums(drums, manifest, base, q) {
   if (!drums) return null;
   const types = ["kick", "snare", "hat"];
   const buffers = {};
-  const b = bust();
   await Promise.all(types.flatMap((type) => (drums[type] || []).map(async (fn) => {
-    try {
-      const buf = await Tone.ToneAudioBuffer.fromUrl(base + fn + b);
-      (buffers[type] = buffers[type] || []).push(buf);
-    } catch { /* skip a bad sample */ }
+    const buf = await loadBuffer(sampleUrls(manifest, base, q, fn));
+    if (buf) (buffers[type] = buffers[type] || []).push(buf);
   })));
   return Object.keys(buffers).length ? new DrumKit(buffers) : null;
 }
 
-// Returns { manifest, harmony, lead, drums } — any field null if absent — or null if no prebake.
+// Returns { manifest, harmony, lead, drums, more } — any field null if absent — or null if no prebake.
 // Nodes are created but NOT connected; the caller wires routing (stems / FX / destination).
+// `more` resolves when the background variations have finished loading.
 export async function loadVoices(base = "/voices/") {
-  let manifest;
-  try {
-    const r = await fetch(base + "manifest.json", { cache: "no-store" });
-    if (!r.ok) return null;
-    manifest = await r.json();
-  } catch {
-    return null;
-  }
+  let m;
+  try { m = await fetchManifest(base); } catch { return null; }
+  if (!m) return null;
+  const { manifest, q } = m;
   const voices = manifest?.voices || {};
+  const background = [];
   const [harmony, lead, bass, drums] = await Promise.all([
-    loadVoice(voices.harmony, base),
-    loadVoice(voices.lead, base),
-    loadVoice(voices.bass, base),
-    loadDrums(manifest?.drums, base),
+    loadVoice(voices.harmony, manifest, base, q, background),
+    loadVoice(voices.lead, manifest, base, q, background),
+    loadVoice(voices.bass, manifest, base, q, background),
+    loadDrums(manifest?.drums, manifest, base, q),
   ]);
-  return { manifest, harmony, lead, bass, drums };
+  const more = Promise.all(background.map((job) => job().catch(() => {})));
+  return { manifest, harmony, lead, bass, drums, more };
+}
+
+// Lobby pre-fetch: warm the HTTP cache with the exact sample URLs loadVoices() will request, so
+// START only has to decode. First variations + drums first (that's what the band waits for), a
+// few requests at a time at low priority so the lobby itself stays responsive. Skipped when the
+// visitor asked to save data or is on a 2G-class link.
+export async function prefetchVoices(base = "/voices/", { concurrency = 4 } = {}) {
+  const c = navigator.connection;
+  if (c?.saveData || /(^|-)2g$/.test(c?.effectiveType || "")) return { skipped: true };
+  const m = await fetchManifest(base).catch(() => null);
+  if (!m) return { skipped: true };
+  const { manifest, q } = m;
+  const first = [], later = [];
+  for (const v of Object.values(manifest.voices || {})) {
+    const vars = v?.variations || (v?.urls ? [v.urls] : []);
+    vars.forEach((map, i) => Object.values(map || {}).forEach((f) => (i ? later : first).push(f)));
+  }
+  for (const t of ["kick", "snare", "hat"]) first.push(...(manifest.drums?.[t] || []));
+  const queue = [...first, ...later].map((f) => sampleUrls(manifest, base, q, f)[0]);
+  let bytes = 0;
+  const worker = async () => {
+    for (let url; (url = queue.shift());) {
+      try { const r = await fetch(url, { priority: "low" }); bytes += (await r.arrayBuffer()).byteLength; } catch {}
+    }
+  };
+  await Promise.all(Array.from({ length: concurrency }, worker));
+  return { skipped: false, bytes };
 }

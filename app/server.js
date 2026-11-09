@@ -261,6 +261,12 @@ app.use((req, _res, next) => {
     console.log(`  HTTP ${req.method} ${req.path} ← ${req.headers["cf-connecting-ip"] || req.ip}`);
   next();
 });
+// Versioned sample URLs (/voices/x.flac?v=<manifest rev>, see voices.js) never change content →
+// cache them for good. Everything else keeps express's default revalidation (ETag → 304).
+app.use("/voices", (req, res, next) => {
+  if (req.query.v) res.set("Cache-Control", "public, max-age=31536000, immutable");
+  next();
+});
 app.use(express.static(join(__dirname, "public")));
 // serve Tone.js locally (works offline on the LAN)
 app.use("/vendor/tone", express.static(join(__dirname, "node_modules/tone/build")));
@@ -270,6 +276,7 @@ app.get("/join", (_req, res) => res.sendFile(join(__dirname, "public/join.html")
 app.get("/info", async (_req, res) => {
   const ju = joinUrl();   // re-read every request: flips to the tunnel URL once it's up
   res.json({ ip: IP, port: PORT, joinUrl: ju, pending: tunnelPending, demo: Boolean(process.env.DEMO_MODE),
+             voicesStatic: Boolean(process.env.NO_PREBAKE),    // stock samples all jam → the lobby may pre-fetch them
              texture: textureStatus.status, textureSource: textureStatus.source,
              qr: await QRCode.toDataURL(ju, { margin: 1, width: 320 }) });
 });
