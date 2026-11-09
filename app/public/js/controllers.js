@@ -654,9 +654,30 @@ function renderMotif() {
   }).join("");
   m.innerHTML = bars + notes;
 }
+// Phone-local audio (tap previews). iOS specifics: WebAudio obeys the ring/silent switch unless the
+// page declares itself a "playback" app (Safari 17+), a context only starts inside a gesture that
+// WebKit accepts (touchend/click — not pointerdown/touchstart), and locking the phone leaves the
+// context "interrupted"/"suspended" until resume() is called again. So: unlock on the first
+// accepted gesture, and resume before every sound if the OS paused it.
 let actx;
-function tone(f, peak = 0.25) {
+try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch {}
+function audio() {
   actx ||= new (window.AudioContext || window.webkitAudioContext)();
+  if (actx.state !== "running" && actx.state !== "closed") actx.resume().catch(() => {});
+  return actx;
+}
+function unlockAudio() {
+  if (actx?.state === "running") return;
+  const c = audio();
+  try {                                      // a 1-sample silent buffer completes the iOS unlock
+    const b = c.createBuffer(1, 1, c.sampleRate), src = c.createBufferSource();
+    src.buffer = b; src.connect(c.destination); src.start(0);
+  } catch {}
+}
+["touchend", "click", "keydown"].forEach((ev) => document.addEventListener(ev, unlockAudio, { capture: true, passive: true }));
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && actx) audio(); });
+function tone(f, peak = 0.25) {
+  const actx = audio();
   const o = actx.createOscillator(), g = actx.createGain();
   o.type = "sawtooth"; o.frequency.value = f; g.gain.value = 0.0001;
   o.connect(g).connect(actx.destination); o.start();
@@ -666,7 +687,7 @@ function tone(f, peak = 0.25) {
 }
 // Sustained tone for HELD lead notes — attack, then ring until stop() is called (note release).
 function holdTone(f, peak = 0.25) {
-  actx ||= new (window.AudioContext || window.webkitAudioContext)();
+  const actx = audio();
   const o = actx.createOscillator(), g = actx.createGain();
   o.type = "sawtooth"; o.frequency.value = f; g.gain.value = 0.0001;
   o.connect(g).connect(actx.destination); o.start();
